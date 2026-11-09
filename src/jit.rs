@@ -68,6 +68,8 @@ pub enum IrOp {
         cond: u8,
         then_ir: usize,
         else_ir: usize,
+        /// конец формы (для будущих оптимизаций; эмиссией не используется)
+        #[allow(dead_code)]
         end_ir: usize,
     },
     /// безусловный переход к IR-индексу
@@ -84,6 +86,7 @@ pub struct JitFn {
     /// арность, которую проверяет входной гард
     pub arity: usize,
     /// константы пула (для отладки/дампов)
+    #[allow(dead_code)]
     pub consts: Vec<f64>,
 }
 
@@ -102,11 +105,13 @@ impl JitFn {
     }
 
     /// Адрес машинного кода (для дампа/дизассемблирования в тестах).
+    #[allow(dead_code)]
     pub fn code_addr(&self) -> usize {
         self.code
     }
 
     /// Длина машинного кода в байтах (включая пул констант).
+    #[allow(dead_code)]
     pub fn code_len(&self) -> usize {
         self.len
     }
@@ -115,6 +120,7 @@ impl JitFn {
 // ——————————————————————————— компилятор: Lisp → IR ———————————————————————————
 
 pub struct Compiler {
+    #[allow(dead_code)]
     arity: usize,
     ir: Vec<IrOp>,
     consts: Vec<f64>,

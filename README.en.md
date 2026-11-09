@@ -117,6 +117,35 @@ with environment labels. Details in `docs/architecture.md`; roadmap in
   communicate only via channels — no data races by construction; `--mcp`
   behavior is unchanged.
 
+## Speed: numeric-kernel JIT + SIMD tokenizer (roadmap stage 3)
+
+**Criteria — checked honestly; one met, one missed:**
+
+| Criterion | Result |
+|---|---|
+| eval/JIT ≥5× | **met: 49×** — interp 2296.5 ns/call → JIT 46.8 ns/call (200k calls of a numeric kernel with if/comparison/division; `--bench`, “JIT numeric kernels” section) |
+| parser ≥3× | **missed: 1.07×** — the parser is allocation-bound, not scan-bound; multi-class SIMD scanning of 3–8-byte tokens does not win memchr-style; numbers and the fix plan in `docs/benchmark.md` |
+| property tests catch JIT bugs | **met**: 3000 seeded-xorshift random expressions, interp vs JIT compared numerically; during development they caught 4 real machine-code bugs |
+
+- **JIT** (`src/jit.rs` + `src/jit/emit.rs`, feature `jit`): small lambdas with
+  purely numeric bodies (`+ - * /`, comparisons, `if/and/or` over comparisons,
+  `let`) compile to a linear IR → **native x86-64** from byte templates with
+  patched rel32 fields (copy-and-patch, CPython-style), mmap RW → mprotect RX
+  (W^X) — via direct Linux syscalls through `core::arch::asm!`.
+  **Zero dependencies** — Cranelift turned out to be unnecessary. Guards:
+  unsupported form → deoptimize, non-numeric argument/arity → interpreter,
+  division by zero → runtime deopt (the interpreter returns its own error,
+  not inf). The exact “what compiles” list is in `LIMITATIONS.md`; the
+  pipeline is in `docs/architecture.md`.
+- **SIMD tokenizer** (`src/simd.rs`): SSE2 byte-class scanning (exact
+  whitespace/delimiter sets via pcmpeqb+movemask) plus memchr-style
+  `find_byte` for comments and strings; the old char-by-char reader remains
+  as fallback and reference — both paths must produce identical ASTs
+  (cross-checked in tests and in `--bench-parse` over the real corpus
+  `assets/lisp/*.lisp`).
+- The default build is unchanged: `cargo build` — zero dependencies; the JIT
+  is enabled with `cargo build --release --features jit`.
+
 ## Demos
 
 3D «ORBITAL» (v0.3): the floor is a procedural "neon circuit" texture (one
@@ -256,6 +285,7 @@ bodies via `vec-add` — ~1100× vs element-wise Lisp (hot data are dense
 | **Batch renderer (v0.3)** | ✅ | `gpu3d-batch[-tex]`, 12 f32/instance, ~3× |
 | **Editor (v0.3)** | ✅ | `--serve`: hierarchy, inspector, REPL, assets, view |
 | **AI Ready/MCP (v0.3)** | ✅ | `--mcp`: 10 tools, screenshots, stdio JSON-RPC |
+| **JIT + SIMD tokenizer (stage 3)** | ◐ | `--features jit`: kernel 49× (criterion ≥5× ✓); parser 1.07× (criterion ≥3× ✗ — honestly in benchmark.md); property tests ✓ |
 
 `*` — deviation from the spec (deliberate for a prototype): instead of `wgpu`
 — a software raster with the same API profile. The wgpu backend plugs in behind
