@@ -14,6 +14,8 @@ mod interp;
 #[cfg(feature = "jit")]
 mod jit;
 mod json;
+#[cfg(test)]
+mod parse_diff;
 mod mcp;
 mod png;
 mod render3d;
