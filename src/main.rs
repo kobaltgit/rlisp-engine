@@ -11,6 +11,8 @@ mod gc;
 mod gpu;
 mod hal;
 mod interp;
+#[cfg(feature = "jit")]
+mod jit;
 mod json;
 mod mcp;
 mod png;
@@ -43,6 +45,7 @@ struct Args {
     stdin_keys: bool,
     fast: bool,
     bench: bool,
+    bench_parse: bool,
     eval_code: Option<String>,
     serve: bool,
     port: u16,
@@ -65,6 +68,7 @@ impl Default for Args {
             stdin_keys: false,
             fast: false,
             bench: false,
+            bench_parse: false,
             eval_code: None,
             serve: false,
             port: 7300,
@@ -97,6 +101,9 @@ rlisp-engine — игровой движок как Lisp-машина (Rust = т
   --fast          без привязки к реальному времени
   --width W --height H   стартовый размер экрана
   --bench         бенчмарк SIMD-слоя + 2D-кадра (Rust HAL vs Lisp-уровень)
+  --bench-parse   бенчмарк токенизатора/парсера: старый посимвольный reader vs
+                  новый SIMD-сканер (src/simd.rs) на реальном корпусе
+                  assets/lisp/*.lisp; оба пути обязаны давать одинаковые AST
   --wgpu          GPU-бэкенд за фасадом HAL (фича `wgpu`): offscreen-рендер +
                   readback в фреймбуфер; без адаптера — откат на программный
                   растр с предупреждением (все скрипты работают как раньше)
@@ -157,6 +164,7 @@ fn parse_args() -> Result<Args, String> {
             "--stdin-keys" => args.stdin_keys = true,
             "--fast" => args.fast = true,
             "--bench" => args.bench = true,
+            "--bench-parse" => args.bench_parse = true,
             "--wgpu" => args.wgpu = true,
             "--eval" => args.eval_code = Some(it.next().ok_or("--eval: нужно выражение")?),
             "--serve" => args.serve = true,
@@ -218,6 +226,14 @@ fn run_eval(code: &str) -> Result<(), String> {
     println!("{}", fmt_value(&last));
     drop(pin);
     let _ = ctx;
+    Ok(())
+}
+
+fn run_bench_parse() -> Result<(), String> {
+    // Этап 3: честное сравнение старого посимвольного reader'а и нового
+    // SIMD-токенизатора на реальном корпусе assets/lisp/*.lisp (+ взаимная
+    // сверка AST). Реализация — по ходу этапа; скелет уже в master.
+    println!("[bench-parse] скелет этапа 3 — реализация в ветке stage3/jit-simd");
     Ok(())
 }
 
@@ -910,6 +926,13 @@ fn main() {
     }
     if args.bench {
         if let Err(e) = run_bench(&args) {
+            eprintln!("[ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.bench_parse {
+        if let Err(e) = run_bench_parse() {
             eprintln!("[ошибка] {}", e);
             std::process::exit(1);
         }

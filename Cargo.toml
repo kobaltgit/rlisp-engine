@@ -28,3 +28,6 @@ optional = true
 default = []
 # Full wgpu-бэкенд: offscreen-рендер + readback в Hal::fb (см. src/gpu.rs).
 wgpu = ["dep:wgpu"]
+# Этап 3: copy-and-patch JIT числовых ядер (x86_64-linux, ноль зависимостей).
+# Дефолтная сборка без jit: интерпретатор и SIMD-токенизатор работают как раньше.
+jit = []
