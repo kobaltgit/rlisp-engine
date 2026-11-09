@@ -1,0 +1,590 @@
+// src/main.rs — Rust-ядро: запускает Lisp-мир и вызывает update(dt)/draw() каждый кадр.
+// Горячий цикл — Lisp; Rust здесь делает только HAL-работу: время, ввод, кадры, hot reload.
+
+mod editor;
+mod hal;
+mod interp;
+mod json;
+mod mcp;
+mod png;
+mod render3d;
+mod simd;
+
+use hal::{Hal, OutputMode};
+use interp::{
+    apply, env_define, env_get, env_new, fmt_value, load_file, parse_program, CoreCtx, Env,
+    GlobalCell, LoadRegistry, Value,
+};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::Command;
+use std::rc::Rc;
+use std::time::{Duration, Instant, SystemTime};
+
+struct Args {
+    script: String,
+    ascii: bool,
+    capture: Option<String>,
+    every: usize,
+    frames: u64,
+    fps: f64,
+    width: usize,
+    height: usize,
+    input: Option<String>,
+    stdin_keys: bool,
+    fast: bool,
+    bench: bool,
+    eval_code: Option<String>,
+    serve: bool,
+    port: u16,
+    mcp: bool,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Args {
+            script: "assets/lisp/main.lisp".into(),
+            ascii: false,
+            capture: None,
+            every: 3,
+            frames: u64::MAX,
+            fps: 30.0,
+            width: 320,
+            height: 240,
+            input: None,
+            stdin_keys: false,
+            fast: false,
+            bench: false,
+            eval_code: None,
+            serve: false,
+            port: 7300,
+            mcp: false,
+        }
+    }
+}
+
+const USAGE: &str = "\
+rlisp-engine — игровой движок как Lisp-машина (Rust = только HAL)
+
+ЗАПУСК ДЕМО «ВЫЖИВАНИЕ» (весь игровой код — Lisp):
+  cargo run --release
+  cargo run --release -- --ascii --stdin-keys   # играть в терминале: wasd, q — выход
+
+ЗАПУСК 3D-ДЕМО «ORBITAL» (3D-пайплайн на Lisp над HAL-растром):
+  cargo run --release -- --script assets/lisp/main3d.lisp --ascii --stdin-keys
+  cargo run --release -- --script assets/lisp/main3d.lisp --capture demo/frames3d --every 6 --frames 540 --fast
+
+РЕЖИМЫ:
+  --script FILE   точка входа Lisp (по умолчанию assets/lisp/main.lisp)
+  --ascii         рендер в терминал (ANSI)
+  --stdin-keys    клавиши из stdin (raw mode; строчные — нажать, заглавные — отпустить)
+  --input FILE    сценарий ввода: строки «ВРЕМЯ КЛАВИША down|up»
+  --capture DIR   писать кадры PNG в DIR
+  --every N       каждый N-й кадр (по умолчанию 3)
+  --frames N      остановиться после N кадров
+  --fps F         шаг симуляции (по умолчанию 30)
+  --fast          без привязки к реальному времени
+  --width W --height H   стартовый размер экрана
+  --bench         бенчмарк SIMD-слоя (native + Lisp-уровень)
+  --eval EXPR     вычислить выражение Lisp и выйти
+
+РЕДАКТОР И AI (v0.3):
+  --serve         веб-редактор аля Unity: иерархия, инспектор, REPL,
+                  живой вид, ассеты с hot reload (http://127.0.0.1:7300)
+  --port N        порт для --serve (по умолчанию 7300)
+  --mcp           MCP-сервер (Model Context Protocol, JSON-RPC 2.0, stdio):
+                  ИИ-агент управляет движком — scene/step/eval/screenshot";
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args::default();
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--script" => args.script = it.next().ok_or("--script: нужен путь")?,
+            "--ascii" => args.ascii = true,
+            "--capture" => args.capture = Some(it.next().ok_or("--capture: нужен каталог")?),
+            "--every" => args.every = it.next().ok_or("--every: нужно N")?.parse().map_err(|_| "--every: не число")?,
+            "--frames" => {
+                let n: u64 = it.next().ok_or("--frames: нужно N")?.parse().map_err(|_| "--frames: не число")?;
+                args.frames = if n == 0 { u64::MAX } else { n };
+            }
+            "--fps" => args.fps = it.next().ok_or("--fps: нужно F")?.parse().map_err(|_| "--fps: не число")?,
+            "--width" => args.width = it.next().ok_or("--width: нужно W")?.parse().map_err(|_| "--width: не число")?,
+            "--height" => args.height = it.next().ok_or("--height: нужно H")?.parse().map_err(|_| "--height: не число")?,
+            "--input" => args.input = Some(it.next().ok_or("--input: нужен файл")?),
+            "--stdin-keys" => args.stdin_keys = true,
+            "--fast" => args.fast = true,
+            "--bench" => args.bench = true,
+            "--eval" => args.eval_code = Some(it.next().ok_or("--eval: нужно выражение")?),
+            "--serve" => args.serve = true,
+            "--port" => args.port = it.next().ok_or("--port: нужно N")?.parse().map_err(|_| "--port: не число")?,
+            "--mcp" => args.mcp = true,
+            "--help" | "-h" => {
+                println!("{}", USAGE);
+                std::process::exit(0);
+            }
+            other => return Err(format!("неизвестный флаг: {}", other)),
+        }
+    }
+    Ok(args)
+}
+
+pub fn register_all(env: &Rc<Env>, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
+    interp::register_core(env, ctx);
+    hal::register_hal(env, halrc, ctx.root.clone());
+    simd::register_simd(env);
+    render3d::register_render3d(env, halrc);
+    editor::register_editor(env);
+}
+
+pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
+    let cell: GlobalCell = Rc::new(RefCell::new(env_new(None)));
+    let registry: LoadRegistry = Rc::new(RefCell::new(vec![]));
+    let ctx = CoreCtx { global: cell.clone(), registry, root };
+    let env0 = env_new(None);
+    register_all(&env0, &ctx, &halrc);
+    env_define(&env0, "*root*", Value::Str(".".into()));
+    *cell.borrow_mut() = env0;
+    (ctx, cell)
+}
+
+fn run_eval(code: &str) -> Result<(), String> {
+    let halrc = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 8, 8)));
+    let (ctx, cell) = make_context(halrc, PathBuf::from("."));
+    let prog = parse_program(code)?;
+    let mut last = Value::Nil;
+    for e in prog {
+        last = interp::eval(&e, &cell.borrow().clone(), 0)?;
+    }
+    println!("{}", fmt_value(&last));
+    let _ = ctx;
+    Ok(())
+}
+
+fn run_bench() -> Result<(), String> {
+    println!("== rlisp-engine :: бенчмарк SIMD-слоя (критерий ТЗ §4.5) ==");
+    println!("обнаружен уровень: {}", simd::level_name(simd::detect()));
+    simd::bench_run();
+
+    // Lisp-уровень: интеграция 400 «тел» (800 f32) через vec-add/vec-scale.
+    let halrc = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 8, 8)));
+    let (ctx, cell) = make_context(halrc, PathBuf::from("assets/lisp"));
+    load_file(&PathBuf::from("assets/lisp/core.lisp"), &ctx)?;
+    let code = "(begin \
+        (define pos (make-f32vec 800 1.0)) \
+        (define vel (make-f32vec 800 0.5)) \
+        (define t0 (time-now)) \
+        (dotimes (i 20000) (set! pos (vec-add pos (vec-scale vel 0.016)))) \
+        (- (time-now) t0))";
+    let prog = parse_program(code)?;
+    let secs = interp::eval(&prog[0], &cell.borrow().clone(), 0)?;
+    let secs = match secs {
+        Value::Float(f) => f,
+        _ => return Err("бенчмарк: не число".into()),
+    };
+    let ms = secs * 1000.0;
+    let mflops = 20000.0 * 800.0 * 2.0 / secs / 1e6;
+    println!(
+        "[lisp]  пакет: 20000 итераций vec-add+vec-scale над 800 f32 (400 тел): {:.1} мс ({:.0} млн флоп/с, {:.2} мкс/итерация)",
+        ms, mflops, secs / 20000.0 * 1e6
+    );
+
+    // Контроль: та же интеграция поэлементно на самом Lisp (без SIMD-пакета).
+    let code_scalar = "(begin \
+        (define pos (make-f32vec 800 1.0)) \
+        (define vel (make-f32vec 800 0.5)) \
+        (define t0 (time-now)) \
+        (dotimes (i 200) \
+          (let ((j 0)) \
+            (while (< j 800) \
+              (f32set! pos j (+ (f32ref pos j) (* (f32ref vel j) 0.016))) \
+              (set! j (+ j 1))))) \
+        (- (time-now) t0))";
+    let prog2 = parse_program(code_scalar)?;
+    let secs2 = interp::eval(&prog2[0], &cell.borrow().clone(), 0)?;
+    let secs2 = match secs2 {
+        Value::Float(f) => f,
+        _ => return Err("бенчмарк: не число".into()),
+    };
+    let per_batch = secs / 20000.0;
+    let per_scalar = secs2 / 200.0;
+    println!(
+        "[lisp]  скалярно на Lisp: 200 итераций поэлементного цикла: {:.0} мс ({:.1} мс/итерация)",
+        secs2 * 1000.0,
+        per_scalar * 1000.0
+    );
+    println!(
+        "[lisp]  выигрыш пакета над поэлементной интерпретацией: {:.0}×",
+        per_scalar / per_batch
+    );
+    Ok(())
+}
+
+fn parse_input_file(path: &str) -> Result<Vec<(f64, Value)>, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("input {}: {}", path, e))?;
+    let mut out = vec![];
+    for (ln, line) in src.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(format!("input {}: строка {}: ожидается «ВРЕМЯ КЛАВИША down|up»", path, ln + 1));
+        }
+        let t: f64 = parts[0].parse().map_err(|_| format!("input {}: строка {}: плохое время", path, ln + 1))?;
+        let ev = if parts[2] == "down" { "key-down" } else { "key-up" };
+        out.push((t, Value::List(vec![Value::Sym(ev.into()), Value::Str(parts[1].to_string())])));
+    }
+    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
+}
+
+fn spawn_stdin() -> std::sync::mpsc::Receiver<u8> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        let stdin = std::io::stdin();
+        let mut lock = stdin.lock();
+        loop {
+            match lock.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for i in 0..n {
+                        if tx.send(buf[i]).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    rx
+}
+
+pub fn snapshot_mtimes(files: &[PathBuf]) -> HashMap<PathBuf, SystemTime> {
+    let mut m = HashMap::new();
+    for p in files {
+        if let Ok(mt) = std::fs::metadata(p).and_then(|md| md.modified()) {
+            m.insert(p.clone(), mt);
+        }
+    }
+    m
+}
+
+/// Hot reload по ТЗ §8: новое Lisp-окружение, перечитанные файлы,
+/// состояние из defpersistent переносится из старого мира в новый.
+pub fn reload_all(
+    ctx: &CoreCtx,
+    halrc: &Rc<RefCell<Hal>>,
+    mtimes: &mut HashMap<PathBuf, SystemTime>,
+) -> Result<usize, String> {
+    let g_old = ctx.global.borrow().clone();
+    let mut saved: Vec<(String, Value)> = vec![];
+    if let Some(Value::Table(t)) = env_get(&g_old, "*persistent*") {
+        let keys: Vec<String> = t.borrow().keys().cloned().collect();
+        for k in keys {
+            if let Some(v) = env_get(&g_old, &k) {
+                saved.push((k, v));
+            }
+        }
+    }
+    let n_saved = saved.len();
+    let new_env = env_new(None);
+    register_all(&new_env, ctx, halrc);
+    env_define(&new_env, "*root*", Value::Str(ctx.root.to_string_lossy().into_owned()));
+    *ctx.global.borrow_mut() = new_env.clone();
+    let files: Vec<PathBuf> = ctx.registry.borrow().clone();
+    for p in &files {
+        load_file(p, ctx)?;
+    }
+    for (k, v) in saved {
+        if env_get(&new_env, &k).is_some() {
+            env_define(&new_env, &k, v);
+        }
+    }
+    *mtimes = snapshot_mtimes(&files);
+    Ok(n_saved)
+}
+
+fn run_engine(args: &Args) -> Result<(), String> {
+    let script = PathBuf::from(&args.script);
+    let root = script.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let out_mode = if let Some(dir) = &args.capture {
+        std::fs::create_dir_all(dir).map_err(|e| format!("capture {}: {}", dir, e))?;
+        OutputMode::Png { dir: PathBuf::from(dir), every: args.every.max(1) }
+    } else if args.ascii {
+        OutputMode::Ascii
+    } else {
+        OutputMode::Silent
+    };
+
+    let halrc = Rc::new(RefCell::new(Hal::new(out_mode, args.width, args.height)));
+    let (ctx, cell) = make_context(halrc.clone(), root.clone());
+    env_define(&cell.borrow().clone(), "*root*", Value::Str(root.to_string_lossy().into_owned()));
+
+    load_file(&script, &ctx)?;
+    let (w, h) = {
+        let hb = halrc.borrow();
+        (hb.w, hb.h)
+    };
+
+    // v0.3: мост редактора (--serve) — публикуем кадр/сцену, принимаем команды
+    let bridge = if args.serve {
+        let b = editor::Bridge::new();
+        editor::install_bridge(b.clone());
+        editor::start_server(b.clone(), args.port, root.clone())
+            .map_err(|e| format!("редактор: порт {} занят: {}", args.port, e))?;
+        println!("редактор: http://127.0.0.1:{} (иерархия · инспектор · REPL · ассеты)", args.port);
+        let assets: Vec<String> = ctx.registry.borrow().iter().map(|p| p.display().to_string()).collect();
+        *b.assets.lock().unwrap() = assets;
+        Some(b)
+    } else {
+        None
+    };
+
+    let events = match &args.input {
+        Some(p) => parse_input_file(p)?,
+        None => vec![],
+    };
+    let files: Vec<PathBuf> = ctx.registry.borrow().clone();
+    let mut mtimes = snapshot_mtimes(&files);
+    let n_files = files.len();
+
+    println!(
+        "rlisp-engine v0.3 | SIMD: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
+        simd::level_name(simd::detect()),
+        w,
+        h,
+        n_files,
+        args.script
+    );
+    if args.ascii {
+        println!("управление: wasd — движение, q — выход");
+        print!("\x1b[2J");
+        std::io::stdout().flush().ok();
+    }
+
+    let rx = if args.stdin_keys {
+        let _ = Command::new("stty").arg("raw").arg("-echo").status();
+        Some(spawn_stdin())
+    } else {
+        None
+    };
+
+    let fixed_dt = 1.0 / args.fps;
+    let use_fixed = args.fast || args.capture.is_some() || args.input.is_some();
+    let mut sim_time = 0f64;
+    let mut ev_i = 0usize;
+    let mut frames: u64 = 0;
+    let mut reloads: u64 = 0;
+    let mut quit = false;
+    let wall_start = Instant::now();
+    let mut last_frame_at = Instant::now();
+    let mut next_frame = wall_start + Duration::from_secs_f64(fixed_dt);
+
+    while frames < args.frames {
+        // ввод из сценария
+        while ev_i < events.len() && events[ev_i].0 <= sim_time {
+            halrc.borrow_mut().queue.push(events[ev_i].1.clone());
+            ev_i += 1;
+        }
+        // ввод с клавиатуры
+        if let Some(rx) = &rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(b) => match b {
+                        b'q' | b'Q' | 3 => quit = true,
+                        b'a'..=b'z' => {
+                            let k = (b as char).to_string();
+                            halrc.borrow_mut().queue.push(Value::List(vec![
+                                Value::Sym("key-down".into()),
+                                Value::Str(k),
+                            ]));
+                        }
+                        b'A'..=b'Z' => {
+                            let k = (b as char).to_lowercase().to_string();
+                            halrc.borrow_mut().queue.push(Value::List(vec![
+                                Value::Sym("key-up".into()),
+                                Value::Str(k),
+                            ]));
+                        }
+                        _ => {}
+                    },
+                    Err(_) => break,
+                }
+            }
+        }
+        if quit {
+            break;
+        }
+
+        // v0.3: команды редактора (eval/keys) + ручной reload
+        let mut editor_skip = false;
+        if let Some(b) = &bridge {
+            if editor::drain_editor_cmds(b, &cell, &halrc) {
+                match reload_all(&ctx, &halrc, &mut mtimes) {
+                    Ok(n) => {
+                        reloads += 1;
+                        b.log_line(format!("[reload] {} persistent-значений восстановлено", n));
+                    }
+                    Err(e) => b.log_line(format!("[reload] ошибка: {}", e)),
+                }
+                let assets: Vec<String> = ctx.registry.borrow().iter().map(|p| p.display().to_string()).collect();
+                *b.assets.lock().unwrap() = assets;
+            }
+            let paused = b.paused.load(std::sync::atomic::Ordering::Relaxed);
+            let step = b.step_req.swap(false, std::sync::atomic::Ordering::Relaxed);
+            editor_skip = paused && !step;
+        }
+
+        // hot reload: следим за .lisp-файлами каждый кадр
+        let mut changed: Option<PathBuf> = None;
+        for p in &files {
+            if let Ok(mt) = std::fs::metadata(p).and_then(|md| md.modified()) {
+                if mtimes.get(p) != Some(&mt) {
+                    changed = Some(p.clone());
+                    break;
+                }
+            }
+        }
+        if let Some(p) = changed {
+            match reload_all(&ctx, &halrc, &mut mtimes) {
+                Ok(n) => {
+                    reloads += 1;
+                    eprintln!(
+                        "[hot-reload] кадр {}: {} перезагружен; окружение пересобрано, {} persistent-значений восстановлено",
+                        frames, p.display(), n
+                    );
+                }
+                Err(e) => eprintln!("[hot-reload] ошибка: {} — продолжаем на старом окружении", e),
+            }
+        }
+
+        // dt
+        let dt = if use_fixed {
+            fixed_dt
+        } else {
+            let d = last_frame_at.elapsed().as_secs_f64().clamp(0.001, 0.05);
+            last_frame_at = Instant::now();
+            d
+        };
+
+        // кадр: update(dt) → draw() → frame-end() (в паузе редактора — пропуск)
+        if !editor_skip {
+            let g = cell.borrow().clone();
+            let mut err: Option<String> = None;
+            if let Some(f) = env_get(&g, "update") {
+                if let Err(e) = apply(&f, &[Value::Float(dt)], 0) {
+                    err = Some(format!("update: {}", e));
+                }
+            }
+            if err.is_none() {
+                if let Some(f) = env_get(&g, "draw") {
+                    if let Err(e) = apply(&f, &[], 0) {
+                        err = Some(format!("draw: {}", e));
+                    }
+                }
+            }
+            if err.is_none() {
+                if let Some(f) = env_get(&g, "frame-end") {
+                    let _ = apply(&f, &[], 0);
+                }
+            }
+            if let Some(e) = err {
+                return Err(format!("кадр {}: {}", frames, e));
+            }
+        }
+
+        frames += 1;
+        sim_time += dt;
+
+        // v0.3: публикация кадра/сцены/статистики в мост редактора
+        if let Some(b) = &bridge {
+            {
+                let mut hal = halrc.borrow_mut();
+                *b.fb.lock().unwrap() = hal.fb.clone();
+                *b.fb_wh.lock().unwrap() = (hal.w, hal.h);
+                b.drawcalls.store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
+            }
+            b.frame.store(frames, std::sync::atomic::Ordering::Relaxed);
+            let inst = 1.0 / last_frame_at.elapsed().as_secs_f64().max(1e-6);
+            let mut f = b.fps.lock().unwrap();
+            *f = if *f <= 0.0 { inst } else { *f * 0.9 + inst * 0.1 };
+            editor::publish_scene(&cell, b);
+        }
+
+        // удержание реального времени (для demo hot reload по настенным часам)
+        if !args.fast {
+            next_frame += Duration::from_secs_f64(fixed_dt);
+            let now = Instant::now();
+            if next_frame > now {
+                std::thread::sleep(next_frame - now);
+            } else {
+                next_frame = now;
+            }
+        }
+    }
+
+    if args.stdin_keys {
+        let _ = Command::new("stty").arg("sane").status();
+    }
+
+    let g = cell.borrow().clone();
+    let score = env_get(&g, "*score*").map(|v| fmt_value(&v)).unwrap_or_else(|| "?".into());
+    let wall = wall_start.elapsed().as_secs_f64();
+    println!(
+        "итог: кадров {} за {:.1}с ({:.1} fps) | hot-reload: {} | score: {}",
+        frames,
+        wall,
+        frames as f64 / wall.max(1e-9),
+        reloads,
+        score
+    );
+    Ok(())
+}
+
+fn main() {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{}\n\n{}", e, USAGE);
+            std::process::exit(2);
+        }
+    };
+    // калибровка SIMD-уровня по фактической скорости (см. simd.rs)
+    let lvl = simd::calibrate();
+    if std::env::args().any(|a| a == "--bench") {
+        println!("уровень после калибровки: {}", simd::level_name(lvl));
+    }
+    if args.bench {
+        if let Err(e) = run_bench() {
+            eprintln!("[ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.mcp {
+        let script = PathBuf::from(&args.script);
+        if let Err(e) = mcp::run_mcp(&script, args.fps) {
+            eprintln!("[mcp:ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(code) = args.eval_code.clone() {
+        if let Err(e) = run_eval(&code) {
+            eprintln!("[ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Err(e) = run_engine(&args) {
+        eprintln!("[ошибка] {}", e);
+        std::process::exit(1);
+    }
+}

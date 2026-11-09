@@ -1,0 +1,10 @@
+# Rust
+/target/
+
+# Кадры захвата (промежуточные, финальные артефакты — gif/png в demo/)
+demo/frames/
+demo/frames3d/
+
+# Служебное
+*.log.tmp
+__pycache__/

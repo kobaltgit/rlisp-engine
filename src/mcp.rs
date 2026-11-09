@@ -1,0 +1,329 @@
+// src/mcp.rs — v0.3: MCP-сервер движка (Model Context Protocol, JSON-RPC 2.0
+// поверх stdio, newline-delimited). «AI Ready»: ИИ-агент подключается к живому
+// движку и управляет им — смотрит сцену, спавнит сущности, правит свойства,
+// исполняет Lisp, шагает симуляцию, получает СКРИНШОТЫ (image/png, base64).
+//
+// Запуск: rlisp-engine --mcp --script assets/lisp/main3d.lisp
+// Протокольная обвязка — Rust (как png.rs: байты, не семантика); инструменты
+// вызывают Lisp (editor.lisp/game3d.lisp) — сцена и сущности живут на Lisp.
+
+use crate::editor::{eval_string, step_frame, EngineHandle};
+use crate::interp::{env_get, fmt_value, load_file, GlobalCell};
+use crate::json::Json;
+use crate::png;
+use std::cell::RefCell;
+use std::io::{BufRead, Write};
+use std::rc::Rc;
+
+fn b64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+fn out_line(s: &str) {
+    let mut o = std::io::stdout().lock();
+    let _ = writeln!(o, "{}", s);
+    let _ = o.flush();
+}
+
+fn tool_def(name: &str, desc: &str, props: Vec<(&str, &str)>) -> Json {
+    let mut p = std::collections::BTreeMap::new();
+    for (k, ty) in props {
+        p.insert(
+            k.to_string(),
+            Json::obj(vec![("type", Json::str(ty)), ("description", Json::str(k))]),
+        );
+    }
+    Json::obj(vec![
+        ("name", Json::str(name)),
+        ("description", Json::str(desc)),
+        (
+            "inputSchema",
+            Json::obj(vec![
+                ("type", Json::str("object")),
+                ("properties", Json::Obj(p)),
+            ]),
+        ),
+    ])
+}
+
+fn text_content(s: &str) -> Json {
+    Json::obj(vec![
+        ("content", Json::Arr(vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::str(s))])])),
+        ("isError", Json::Bool(false)),
+    ])
+}
+
+fn err_content(s: &str) -> Json {
+    Json::obj(vec![
+        ("content", Json::Arr(vec![Json::obj(vec![("type", Json::str("text")), ("text", Json::str(s))])])),
+        ("isError", Json::Bool(true)),
+    ])
+}
+
+pub struct McpState {
+    pub h: EngineHandle,
+    pub frames: u64,
+    pub fps: f64,
+    pub dt: f64,
+}
+
+fn fmt_get(cell: &GlobalCell, name: &str) -> String {
+    let g = cell.borrow().clone();
+    env_get(&g, name).map(|v| fmt_value(&v)).unwrap_or_else(|| "?".into())
+}
+
+fn tool_status(state: &McpState) -> Json {
+    let hal = state.h.halrc.borrow();
+    let mut fields: Vec<(String, Json)> = vec![
+        ("frames".into(), Json::int(state.frames as i64)),
+        ("fps_headless".into(), Json::num(state.fps)),
+        ("screen".into(), Json::str(&format!("{}x{}", hal.w, hal.h))),
+        ("simd".into(), Json::str(crate::simd::level_name(crate::simd::detect()))),
+        ("score".into(), Json::str(&fmt_get(&state.h.cell, "*score*"))),
+        ("wave".into(), Json::str(&fmt_get(&state.h.cell, "*wave*"))),
+        ("kills".into(), Json::str(&fmt_get(&state.h.cell, "*kills*"))),
+        ("game_over".into(), Json::str(&fmt_get(&state.h.cell, "*game-over*"))),
+        ("drawcalls".into(), Json::int(hal.r3.drawn as i64)),
+        ("culled".into(), Json::int(hal.r3.culled as i64)),
+        ("textures".into(), Json::int(hal.tex.len() as i64)),
+    ];
+    drop(hal);
+    if fmt_get(&state.h.cell, "*enemies*") != "?" {
+        if let Ok(v) = eval_string("(length (table-entries *enemies*))", &state.h.cell) {
+            fields.push(("enemies".into(), Json::str(&fmt_value(&v))));
+        }
+    }
+    Json::Obj(fields.into_iter().collect())
+}
+
+fn tool_scene(state: &McpState) -> String {
+    let g = state.h.cell.borrow().clone();
+    if let Some(f) = env_get(&g, "editor-scene") {
+        match crate::interp::apply(&f, &[], 0) {
+            Ok(v) => return crate::json::value_to_json(&v).dump(),
+            Err(e) => return format!("{{\"error\":\"{}\"}}", e.replace('"', "'")),
+        }
+    }
+    "[]".into()
+}
+
+fn call_tool(state: &mut McpState, name: &str, a: &Json) -> Json {
+    match name {
+        "status" => text_content(&tool_status(state).dump()),
+        "scene_get" => text_content(&tool_scene(state)),
+        "lisp_eval" => {
+            let code = a.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            if code.is_empty() {
+                err_content("нужен code")
+            } else {
+                match eval_string(code, &state.h.cell) {
+                    Ok(v) => text_content(&fmt_value(&v)),
+                    Err(e) => err_content(&format!("ошибка: {}", e)),
+                }
+            }
+        }
+        "entity_spawn" => {
+            let kind = a.get("kind").and_then(|v| v.as_str()).unwrap_or("grunt");
+            let x = a.get("x").and_then(|v| v.as_f64());
+            let z = a.get("z").and_then(|v| v.as_f64());
+            let code = match (x, z) {
+                (Some(x), Some(z)) => format!("(mcp-spawn-at '{} {} {})", kind, x, z),
+                _ => format!("(mcp-spawn '{}", kind),
+            };
+            match eval_string(&code, &state.h.cell) {
+                Ok(v) => text_content(&format!("создано: {}", fmt_value(&v))),
+                Err(e) => err_content(&format!("ошибка: {}", e)),
+            }
+        }
+        "entity_set" => {
+            let id = a.get("id").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+            let prop = a.get("prop").and_then(|v| v.as_str()).unwrap_or("");
+            let val = a.get("value").cloned().unwrap_or(Json::Num(0.0));
+            if id < 0.0 || prop.is_empty() {
+                err_content("нужны id и prop")
+            } else {
+                let lv = crate::json::json_to_value(&val);
+                let code = format!("(mcp-set {} '{}' {})", id as i64, prop, fmt_value(&lv));
+                match eval_string(&code, &state.h.cell) {
+                    Ok(_) => text_content(&format!("{}.{} = {}", id as i64, prop, fmt_value(&lv))),
+                    Err(e) => err_content(&format!("ошибка: {}", e)),
+                }
+            }
+        }
+        "entity_remove" => {
+            let id = a.get("id").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+            match eval_string(&format!("(mcp-remove {})", id as i64), &state.h.cell) {
+                Ok(_) => text_content(&format!("удалён {}", id as i64)),
+                Err(e) => err_content(&format!("ошибка: {}", e)),
+            }
+        }
+        "step" => {
+            let n = a.get("frames").and_then(|v| v.as_f64()).unwrap_or(1.0).clamp(1.0, 600.0) as u64;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                if let Err(e) = step_frame(&state.h, state.dt) {
+                    return err_content(&format!("кадр {}: {}", state.frames, e));
+                }
+                state.frames += 1;
+            }
+            state.fps = n as f64 / t0.elapsed().as_secs_f64().max(1e-9);
+            text_content(&format!("выполнено {} кадров ({:.1} fps headless)", n, state.fps))
+        }
+        "screenshot" => {
+            let hal = state.h.halrc.borrow();
+            match png::encode_png(&hal.fb, hal.w, hal.h) {
+                Ok(bytes) => {
+                    drop(hal);
+                    let s = b64(&bytes);
+                    Json::obj(vec![
+                        ("content", Json::Arr(vec![Json::obj(vec![
+                            ("type", Json::str("image")),
+                            ("data", Json::Str(s)),
+                            ("mimeType", Json::str("image/png")),
+                        ])])),
+                        ("isError", Json::Bool(false)),
+                    ])
+                }
+                Err(e) => err_content(&format!("png: {}", e)),
+            }
+        }
+        "hot_reload" => {
+            let files: Vec<std::path::PathBuf> = state.h.ctx.registry.borrow().clone();
+            let mut mtimes = crate::snapshot_mtimes(&files);
+            match crate::reload_all(&state.h.ctx, &state.h.halrc, &mut mtimes) {
+                Ok(n) => text_content(&format!("перезагружено, {} persistent-значений восстановлено", n)),
+                Err(e) => err_content(&format!("ошибка: {} — работаем на старом окружении", e)),
+            }
+        }
+        "key" => {
+            let k = a.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let down = a.get("down").and_then(|v| v.as_bool()).unwrap_or(true);
+            if k.is_empty() || !k.chars().all(|c| c.is_ascii_lowercase()) {
+                err_content("нужна клавиша a-z")
+            } else {
+                let ev = if down { "key-down" } else { "key-up" };
+                state.h.halrc.borrow_mut().queue.push(crate::interp::Value::List(vec![
+                    crate::interp::Value::Sym(ev.into()),
+                    crate::interp::Value::Str(k.clone()),
+                ]));
+                text_content(&format!("{} {}", k, if down { "down" } else { "up" }))
+            }
+        }
+        other => err_content(&format!("неизвестный инструмент: {}", other)),
+    }
+}
+
+fn tools_list() -> Vec<Json> {
+    vec![
+    tool_def("status", "Состояние движка: кадры, fps, счёт, волна, враги, draw calls", vec![]),
+    tool_def("scene_get", "Сцена в JSON: игрок, враги, пули, эффекты с координатами", vec![]),
+    tool_def("lisp_eval", "Исполнить код Lisp в живом окружении движка (полный доступ)", vec![("code", "string")]),
+    tool_def("entity_spawn", "Заспавнить врага: kind = grunt|brute", vec![("kind", "string"), ("x", "number"), ("z", "number")]),
+    tool_def("entity_set", "Свойство сущности: id, prop (x|z|hp|...), value", vec![("id", "number"), ("prop", "string"), ("value", "any")]),
+    tool_def("entity_remove", "Удалить врага по id", vec![("id", "number")]),
+    tool_def("step", "Прошагать симуляцию N кадров (1..600)", vec![("frames", "number")]),
+    tool_def("screenshot", "Скриншот экрана движка: PNG base64 (image content)", vec![]),
+    tool_def("hot_reload", "Перечитать .lisp-файлы (состояние defpersistent переносится)", vec![]),
+    tool_def("key", "Событие клавиатуры: key a-z, down bool", vec![("key", "string"), ("down", "boolean")]),
+    ]
+}
+
+pub fn run_mcp(script: &std::path::Path, fps: f64) -> Result<(), String> {
+    crate::interp::set_mcp_quiet(true);
+    let halrc = Rc::new(RefCell::new(crate::hal::Hal::new(crate::hal::OutputMode::Silent, 320, 240)));
+    let root = script.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+    let (ctx, cell) = crate::make_context(halrc.clone(), root);
+    load_file(script, &ctx)?;
+    let h = EngineHandle { ctx, cell, halrc };
+    let mut state = McpState { h, frames: 0, fps: 0.0, dt: 1.0 / fps.max(1.0) };
+
+    eprintln!("[mcp] rlisp-engine MCP готов; инструментов: {} (stdio, JSON-RPC 2.0)", tools_list().len());
+
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let msg = match crate::json::parse(&line) {
+            Ok(m) => m,
+            Err(e) => {
+                out_line(&Json::obj(vec![
+                    ("jsonrpc", Json::str("2.0")),
+                    ("id", Json::Null),
+                    ("error", Json::obj(vec![("code", Json::int(-32700)), ("message", Json::str(&format!("parse error: {}", e)))])),
+                ]).dump());
+                continue;
+            }
+        };
+        let method = msg.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = msg.get("id").cloned().unwrap_or(Json::Null);
+        let is_notification = matches!(msg.get("id"), None | Some(Json::Null));
+
+        match method.as_str() {
+            "initialize" => {
+                let result = Json::obj(vec![
+                    ("protocolVersion", Json::str("2024-11-05")),
+                    ("capabilities", Json::obj(vec![("tools", Json::obj(vec![]))])),
+                    ("serverInfo", Json::obj(vec![
+                        ("name", Json::str("rlisp-engine")),
+                        ("version", Json::str("0.3.0")),
+                        ("title", Json::str("RLISP Game Engine — Lisp-машина")),
+                    ])),
+                ]);
+                out_line(&Json::obj(vec![
+                    ("jsonrpc", Json::str("2.0")),
+                    ("id", id),
+                    ("result", result),
+                ]).dump());
+            }
+            "notifications/initialized" | "notifications/cancelled" => {}
+            "tools/list" => {
+                out_line(&Json::obj(vec![
+                    ("jsonrpc", Json::str("2.0")),
+                    ("id", id),
+                    ("result", Json::obj(vec![("tools", Json::Arr(tools_list()))])),
+                ]).dump());
+            }
+            "tools/call" => {
+                let params = msg.get("params").cloned().unwrap_or(Json::Null);
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let args = params.get("arguments").cloned().unwrap_or(Json::obj(vec![]));
+                let result = call_tool(&mut state, &name, &args);
+                out_line(&Json::obj(vec![
+                    ("jsonrpc", Json::str("2.0")),
+                    ("id", id),
+                    ("result", result),
+                ]).dump());
+            }
+            "ping" => {
+                out_line(&Json::obj(vec![("jsonrpc", Json::str("2.0")), ("id", id), ("result", Json::obj(vec![]))]).dump());
+            }
+            other => {
+                if is_notification {
+                    continue;
+                }
+                out_line(&Json::obj(vec![
+                    ("jsonrpc", Json::str("2.0")),
+                    ("id", id),
+                    ("error", Json::obj(vec![("code", Json::int(-32601)), ("message", Json::str(&format!("метод не найден: {}", other)))])),
+                ]).dump());
+            }
+        }
+    }
+    eprintln!("[mcp] сеанс завершён, кадров выполнено: {}", state.frames);
+    Ok(())
+}

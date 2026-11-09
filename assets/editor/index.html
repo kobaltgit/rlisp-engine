@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>RLISP ENGINE — редактор</title>
+<style>
+  :root {
+    --bg: #14161c; --panel: #1c1f27; --panel2: #232733; --line: #2f3442;
+    --txt: #c9d1e0; --dim: #7d8699; --acc: #38c7d8; --acc2: #f5a623;
+    --ok: #59d98c; --err: #ef5964; --sel: #2b3a4d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--txt);
+    font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  code, pre, textarea, input, .mono { font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace; }
+
+  /* ─── тулбар ─── */
+  #bar {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto;
+  }
+  #logo { font-weight: 700; letter-spacing: 1.5px; color: var(--acc); }
+  #logo b { color: var(--acc2); }
+  .stat { color: var(--dim); font-size: 12px; }
+  .stat b { color: var(--txt); font-weight: 600; }
+  .spacer { flex: 1; }
+  button {
+    background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 12px; cursor: pointer; font-size: 12px;
+  }
+  button:hover { border-color: var(--acc); color: var(--acc); }
+  button.warn:hover { border-color: var(--acc2); color: var(--acc2); }
+  button.primary { background: #10333a; border-color: #1e5c66; }
+
+  /* ─── сетка ─── */
+  #main { flex: 1; display: grid; grid-template-columns: 230px 1fr 330px; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+  .col:last-child { border-right: 0; }
+  .panel-title {
+    padding: 6px 10px; font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px;
+    color: var(--dim); background: var(--panel); border-bottom: 1px solid var(--line);
+    text-transform: uppercase; flex: 0 0 auto;
+  }
+  .panel-body { flex: 1; overflow-y: auto; min-height: 0; }
+
+  /* ─── иерархия ─── */
+function entKey(e) { return (e.type || "?") + ":" + (e.id != null ? e.id : "-"); }
+let selKey = null, lastSig = null;
+function sceneSig() { return scene.map(entKey).join("|"); }
+
+function renderHier() {
+  const h = $("hier");
+  const sig = sceneSig();
+  if (sig !== lastSig) {
+    // состав сущностей изменился → полная перерисовка (клики стабильны между опросами)
+    lastSig = sig;
+    h.innerHTML = "";
+    const groups = {};
+    for (const e of scene) (groups[e.type] = groups[e.type] || []).push(e);
+    for (const type of Object.keys(groups).sort()) {
+      const g = document.createElement("div");
+      g.className = "grp"; g.textContent = type + "  ·  " + groups[type].length;
+      h.appendChild(g);
+      for (const e of groups[type]) {
+        const d = document.createElement("div");
+        d.className = "ent";
+        d.dataset.key = entKey(e);
+        const name = document.createElement("span");
+        name.textContent = e.name ? e.name : e.type + " #" + e.id;
+        const co = document.createElement("span");
+        co.className = "co";
+        d.appendChild(name);
+        d.appendChild(co);
+        d.onclick = () => { selKey = entKey(e); syncSelected(); renderHier(); renderInsp(); };
+        h.appendChild(d);
+      }
+    }
+  }
+  // координаты и подсветка обновляются в-place, без пересоздания DOM
+  for (const d of h.querySelectorAll(".ent")) {
+    const e = scene.find(x => entKey(x) === d.dataset.key);
+    if (!e) continue;
+    const co = e.x !== undefined ? " (" + fmt(e.x) + ", " + fmt(e.z !== undefined ? e.z : e.y) + ")" : "";
+    d.querySelector(".co").textContent = co;
+    d.classList.toggle("sel", selKey === d.dataset.key);
+  }
+}
+function syncSelected() { selected = scene.find(e => entKey(e) === selKey) || selected; }
+
+function fmt(v) { return typeof v === "number" ? (Math.round(v * 10) / 10) : v; }
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+/* ─── инспектор ─── */
+function renderInspSoft() {
+  if (!selected) return;
+  const skip = new Set(["id", "type", "ref", "name", "__i"]);
+  document.querySelectorAll("#insp input[data-prop]").forEach(inp => {
+    if (inp === document.activeElement) return; // не бьём по рукам во время правки
+    const v = selected[inp.dataset.prop];
+    if (v !== undefined && String(v) !== inp.value) inp.value = v;
+  });
+}
+function renderInsp() {
+  const box = $("insp");
+  if (!selected) { box.innerHTML = "<div class='hint'>Выбери сущность в иерархии.</div>"; return; }
+  const skip = new Set(["id", "type", "ref", "name", "__i"]);
+  let html = "<div class='name'>" + escapeHtml(selected.name || selected.type) + " #" + selected.id + "</div>";
+  html += "<div class='hint' style='padding:0 0 6px'>ref: <code>" + escapeHtml(selected.ref || "?") + "</code></div>";
+  for (const k of Object.keys(selected)) {
+    if (skip.has(k)) continue;
+    const v = selected[k];
+    if (typeof v === "number" || typeof v === "string" || typeof v === "boolean") {
+      html += "<div class='prop'><label>" + escapeHtml(k) + "</label>" +
+              "<input data-prop='" + escapeHtml(k) + "' value='" + escapeHtml(v) + "'></div>";
+    }
+  }
+  html += "<button class='apply primary' onclick='applyInsp()'>Применить</button>";
+  html += selected.type === "enemy" ? "<button class='apply' onclick='removeSel()'>Удалить</button>" : "";
+  box.innerHTML = html;
+}
+function applyInsp() {
+  if (!selected || !selected.ref) return;
+  const sets = [];
+  document.querySelectorAll("#insp input[data-prop]").forEach(inp => {
+    const k = inp.dataset.prop, raw = inp.value.trim();
+    let v;
+    if (raw === "#t") v = "#t";
+    else if (raw === "#f") v = "#f";
+    else if (!isNaN(parseFloat(raw)) && /^-?[\d.]+(e-?\d+)?$/i.test(raw)) v = raw;
+    else v = "'" + raw;
+    sets.push("(table-set! " + selected.ref + " '" + k + " " + v + ")");
+  });
+  if (sets.length) evalLisp("(begin " + sets.join(" ") + ")");
+}
+function removeSel() {
+  if (selected && selected.type === "enemy") evalLisp("(mcp-remove " + selected.id + ")");
+  selected = null; selKey = null; renderInsp();
+}
+
+/* ─── код/ассеты ─── */
+function renderAssets() {
+  const box = $("assets");
+  box.innerHTML = "";
+  for (const a of assets) {
+    const b = document.createElement("button");
+    b.textContent = a.split("/").pop();
+    b.onclick = () => openFile(a);
+    if (curFile === a) b.style.borderColor = "var(--acc)";
+    box.appendChild(b);
+  }
+}
+async function openFile(p) {
+  const j = await api("/api/file?path=" + encodeURIComponent(p));
+  if (j.content !== undefined) {
+    $("code").value = j.content;
+    curFile = p;
+    $("codefile").textContent = p;
+    document.querySelector('[data-t="code"]').click();
+  } else logLine("файл: " + (j.error || "?"), "bad");
+}
+async function saveCode() {
+  if (!curFile) return;
+  await api("/api/save", {path: curFile, content: $("code").value});
+  logLine("сохранено: " + curFile + " — движок подхватит на лету", "sys");
+}
+$("code").addEventListener("input", () => {
+  $("codefile").textContent = curFile + " • изменён";
+});
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveCode(); }
+});
+
+/* ─── табы ─── */
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("on"));
+  document.querySelectorAll(".tabpage").forEach(x => x.classList.remove("on"));
+  t.classList.add("on");
+  $("p-" + t.dataset.t).classList.add("on");
+});
+
+/* ─── цикл опроса ─── */
+let frameTick = 0;
+async function poll() {
+  try {
+    const st = await api("/api/state?since=" + lastResult);
+    $("s-frame").textContent = st.frame;
+    $("s-fps").textContent = Math.round(st.fps);
+    $("s-dc").textContent = st.drawcalls;
+    $("paused-tag").style.display = st.paused ? "block" : "none";
+    $("b-pause").textContent = st.paused ? "▶ Пуск" : "⏸ Пауза";
+
+    if (st.scene && st.scene !== "[]") {
+      try {
+        scene = JSON.parse(st.scene);
+        renderHier();
+        // инспектор подтягивает живые значения выбранной сущности
+        if (selKey) {
+          const was = selected && selected.type === "enemy" ? document.activeElement : null;
+          syncSelected();
+          if (selected && (!was || document.activeElement !== was || true)) renderInspSoft();
+        }
+      } catch (_) {}
+    }
+    for (const l of st.log || []) {
+      if (l[0] > lastLogSeq) { lastLogSeq = l[0]; logLine(l[1], "sys"); }
+    }
+    for (const r of st.results || []) {
+      logLine("#" + r.id + " → " + r.result, r.result.startsWith("ОШИБКА") ? "bad" : "res");
+      if (r.id > lastResult) lastResult = r.id;
+    }
+    const newAssets = (st.assets || []).join("\u0000");
+    if (newAssets !== assets.join("\u0000")) { assets = st.assets || []; renderAssets(); }
+
+    frameTick++;
+    if (frameTick % 2 === 0) $("view").src = "/frame.png?t=" + Date.now();
+  } catch (_) { /* сервер мог быть перезапущен */ }
+}
+setInterval(poll, 250);
+poll();
+logLine("редактор подключён. Всё живое: правь код — мир меняется без перезапуска.", "sys");
+</script>
+</body>
+</html>
