@@ -14,9 +14,9 @@ mod interp;
 #[cfg(feature = "jit")]
 mod jit;
 mod json;
+mod mcp;
 #[cfg(test)]
 mod parse_diff;
-mod mcp;
 mod png;
 mod render3d;
 mod simd;
@@ -260,7 +260,14 @@ fn bench_jit() -> Result<(), String> {
     let l = gc::lambda_clone(g);
     let compiled = crate::jit::compile(&Value::Lambda(g)).is_some();
     println!("ядро: (lambda (x y) (if (< x y) (+ (* x x) (* y 2.0)) (- (* x y) (/ x y))))");
-    println!("JIT-компиляция: {} (фича jit, x86_64-linux)", if compiled { "успешна" } else { "деоптимизация" });
+    println!(
+        "JIT-компиляция: {} (фича jit, x86_64-linux)",
+        if compiled {
+            "успешна"
+        } else {
+            "деоптимизация"
+        }
+    );
 
     let n = 200_000usize;
     let mut acc = 0.0f64;
@@ -302,7 +309,10 @@ fn bench_jit() -> Result<(), String> {
         n,
         dt_jit.as_secs_f64() / n as f64 * 1e9
     );
-    println!("[jit] ускорение: {:.2}x (критерий этапа: ≥5x); контрольная сумма {:.4}", speedup, acc);
+    println!(
+        "[jit] ускорение: {:.2}x (критерий этапа: ≥5x); контрольная сумма {:.4}",
+        speedup, acc
+    );
     Ok(())
 }
 
@@ -326,7 +336,8 @@ fn run_bench_parse() -> Result<(), String> {
         .collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
-        let src = std::fs::read_to_string(e.path()).map_err(|err| format!("{}: {}", e.path().display(), err))?;
+        let src = std::fs::read_to_string(e.path())
+            .map_err(|err| format!("{}: {}", e.path().display(), err))?;
         total_bytes += src.len();
         corpus.push((e.file_name().to_string_lossy().into_owned(), src));
     }
@@ -360,7 +371,10 @@ fn run_bench_parse() -> Result<(), String> {
         lex_simd += interp::lex_only_simd(src);
     }
     if lex_scalar != lex_simd {
-        return Err(format!("лексический счёт расходится: {} vs {}", lex_scalar, lex_simd));
+        return Err(format!(
+            "лексический счёт расходится: {} vs {}",
+            lex_scalar, lex_simd
+        ));
     }
 
     let t2 = Instant::now();
@@ -415,7 +429,7 @@ fn run_bench_parse() -> Result<(), String> {
     let dt_simd = t1.elapsed();
 
     assert_eq!(forms_scalar, forms_simd);
-    let bs = total_bytes as f64 * iters as f64;
+    let _bs = total_bytes as f64 * iters as f64;
     let speedup = dt_scalar.as_secs_f64() / dt_simd.as_secs_f64();
     println!(
         "[парсер] scalar (старый reader):  {:>8.1} мс за {} прогонов корпуса — {:.0} МБ/с",
@@ -1071,14 +1085,19 @@ fn run_engine(args: &Args) -> Result<(), String> {
                     .store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
             }
             b.frame.store(frames, std::sync::atomic::Ordering::Relaxed);
-            let inst = 1.0 / last_frame_at.elapsed().as_secs_f64().max(1e-6);
-            let mut f = b.fps.lock().unwrap();
-            *f = if *f <= 0.0 {
-                inst
-            } else {
-                *f * 0.9 + inst * 0.1
-            };
+            // fps считаем только по реально отрисованным кадрам: в паузе
+            // редактора цикл крутится вхолостую и «fps 12000» — ложь
+            if !editor_skip {
+                let inst = 1.0 / last_frame_at.elapsed().as_secs_f64().max(1e-6);
+                let mut f = b.fps.lock().unwrap();
+                *f = if *f <= 0.0 {
+                    inst
+                } else {
+                    *f * 0.9 + inst * 0.1
+                };
+            }
             editor::publish_scene(&cell, b);
+            editor::publish_extras(&cell, b);
         }
 
         // удержание реального времени (для demo hot reload по настенным часам)

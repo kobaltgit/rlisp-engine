@@ -1,3 +1,5 @@
+#![allow(clippy::needless_return, clippy::only_used_in_recursion)]
+
 // src/interp.rs — Уровень 2: Lisp-интерпретатор (+ макросы, TCO, замыкания).
 // Минимальный, но достаточный диалект по ТЗ §4.2:
 //   числа/строки/символы/булевы, списки/векторы/хеш-таблицы, define/lambda/if/let/begin,
@@ -1841,6 +1843,13 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
         match &args[0] {
             Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
             _ => Err("string-length: нужна строка".into()),
+        }
+    });
+    def(env, "string=?", |args| {
+        need(args, 2)?;
+        match (&args[0], &args[1]) {
+            (Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a == b)),
+            _ => Err("string=?: нужны две строки".into()),
         }
     });
     def(env, "string-at", |args| {
