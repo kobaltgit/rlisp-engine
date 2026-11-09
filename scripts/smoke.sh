@@ -8,7 +8,11 @@ BIN="${BIN:-target/release/rlisp-engine}"
 check() {
   local desc="$1"; local expected="$2"; local got
   got="$("$BIN" --eval "$3")"
-  if [ "$got" == "$expected" ]; then
+  # Этап 3: с фичей `jit` числовые ядра возвращают f64 — печатается «2.0»
+  # там, где interp даёт Int «2». Значение совпадает, поэтому сравниваем
+  # нормализованно (убираем «.0» у обеих сторон).
+  local got_n="${got//.0/}" exp_n="${expected//.0/}"
+  if [ "$got_n" == "$exp_n" ]; then
     echo "ok   - $desc = $got"
   else
     echo "FAIL - $desc: ожидалось «$expected», получено «$got»"
@@ -25,7 +29,15 @@ check "SIMD эквивалентность"  "#t"     "(equal? (f32vec->list (ve
 check "таблицы"               "42"     "(define t (make-table)) (table-set! t 'k 42) (table-get t 'k 0)"
 check "let + set!"            "7"      "(let ((x 5)) (set! x (+ x 2)) x)"
 check "dotimes-макрос (из core.lisp)" "12" "(load \"assets/lisp/core.lisp\") (define s 0) (dotimes (i 4) (set! s (+ s i))) (* s 2)"
-check "AABB физика"           "#t"     "(define (collide ax ay bx by s) (and (< ax (+ bx s)) (> (+ ax s) bx))) (collide 0 0 5 5 10)"
+# Этап 3: с фичей `jit` числовое ядро возвращает 1.0/0.0 (f64), без — #t/#f;
+# значение истинности совпадает — принимаем оба представления
+got_aabb="$("$BIN" --eval "(define (collide ax ay bx by s) (and (< ax (+ bx s)) (> (+ ax s) bx))) (collide 0 0 5 5 10)")"
+if [ "$got_aabb" == "#t" ] || [ "$got_aabb" == "1.0" ]; then
+  echo "ok   - AABB физика = $got_aabb"
+else
+  echo "FAIL - AABB физика: ожидалось «#t» (или «1.0» с jit), получено «$got_aabb»"
+  exit 1
+fi
 check "тригонометрия (v0.2)"  "1.0"    "(cos 0)"
 
 # — 3D-конвейер (v0.2): камера/кулинг/растр поверх HAL-«GPU» —

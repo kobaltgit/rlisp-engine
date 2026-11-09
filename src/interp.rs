@@ -711,11 +711,131 @@ fn parse_expr(chars: &[char], pos: &mut usize) -> Result<Value, String> {
     }
 }
 
+/// Только лексический скан без построения Value: сколько лексем в источнике.
+/// Эталонная «лексерная» часть старого пути — для честного сравнения с SIMD.
+pub fn lex_only_scalar(src: &str) -> usize {
+    let chars: Vec<char> = src.chars().collect();
+    let mut pos = 0usize;
+    let mut count = 0usize;
+    loop {
+        let _ = skip_ws(&chars, &mut pos);
+        if pos >= chars.len() {
+            return count;
+        }
+        let c = chars[pos];
+        match c {
+            '(' | '[' => {
+                pos += 1;
+                count += 1;
+            }
+            ')' | ']' => {
+                pos += 1;
+            }
+            '\'' | '`' | ',' | '@' => {
+                pos += 1;
+                count += 1;
+            }
+            '"' => {
+                pos += 1;
+                count += 1;
+                while pos < chars.len() {
+                    if chars[pos] == '"' {
+                        pos += 1;
+                        break;
+                    }
+                    if chars[pos] == '\\' {
+                        pos += 1;
+                    }
+                    pos += 1;
+                }
+            }
+            _ => {
+                let start = pos;
+                while pos < chars.len() {
+                    let ch = chars[pos];
+                    if ch.is_whitespace() || "()[]'`,;\"".contains(ch) {
+                        break;
+                    }
+                    pos += 1;
+                }
+                if pos > start {
+                    count += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Аналогично для SIMD-пути (skip_ws_b + atom_end_b + find_byte), без Value.
+pub fn lex_only_simd(src: &str) -> usize {
+    let bytes = src.as_bytes();
+    let mut pos = 0usize;
+    let mut count = 0usize;
+    loop {
+        pos = skip_ws_b(bytes, pos);
+        if pos >= bytes.len() {
+            return count;
+        }
+        let c = bytes[pos];
+        match c {
+            b'(' | b'[' => {
+                pos += 1;
+                count += 1;
+            }
+            b')' | b']' => {
+                pos += 1;
+            }
+            b'\'' | b'`' | b',' | b'@' => {
+                pos += 1;
+                count += 1;
+            }
+            b'"' => {
+                pos += 1;
+                count += 1;
+                loop {
+                    let q = simd::find_byte(bytes, pos, b'"');
+                    let bs = simd::find_byte(bytes, pos, b'\\');
+                    let i = match (q, bs) {
+                        (None, None) => return count,
+                        (Some(qi), None) => qi,
+                        (None, Some(bi)) => bi,
+                        (Some(qi), Some(bi)) => qi.min(bi),
+                    };
+                    if bytes[i] == b'\\' {
+                        pos = i + 2;
+                    } else {
+                        pos = i + 1;
+                        break;
+                    }
+                }
+            }
+            _ => {
+                let end = atom_end_b(bytes, pos);
+                if end > pos {
+                    count += 1;
+                }
+                pos = end.max(pos + 1);
+            }
+        }
+    }
+}
+
 fn parse_atom(atom: &str) -> Result<Value, String> {
     match atom {
         "#t" | "#true" => return Ok(Value::Bool(true)),
         "#f" | "#false" => return Ok(Value::Bool(false)),
         _ => {}
+    }
+    // быстрый путь: атом не начинается как число → сразу Sym, без двух
+    // безуспешных parse::<i64>/parse::<f64> (главная внелексемная стоимость)
+    let b = atom.as_bytes();
+    let numeric_ish = match b[0] {
+        b'0'..=b'9' => true,
+        b'-' | b'+' | b'.' => b.len() > 1 && b[1].is_ascii_digit(),
+        _ => false,
+    };
+    if !numeric_ish {
+        return Ok(Value::Sym(atom.to_string()));
     }
     if let Ok(i) = atom.parse::<i64>() {
         return Ok(Value::Int(i));

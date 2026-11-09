@@ -907,29 +907,52 @@ pub fn find_byte(bytes: &[u8], pos: usize, target: u8) -> Option<usize> {
 }
 
 #[cfg(target_arch = "x86_64")]
+static WS_SET: [u8; 16] = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+#[cfg(target_arch = "x86_64")]
+static DL_SET: [u8; 16] = [
+    b'(', b')', b'[', b']', b'\'', b'`', b',', b';', b'"', 0, 0, 0, 0, 0, 0, 0,
+];
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
 fn next_hit_sse2(bytes: &[u8], mut pos: usize) -> Option<(usize, Hit)> {
     use std::arch::x86_64::*;
     unsafe {
-        let ws_set = [
-            0x09u8, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        // векторы-наборы читаются из static (без постройки на стеке каждый вызов)
+        let ws_v = _mm_loadu_si128(WS_SET.as_ptr() as *const __m128i);
+        let dl_v = _mm_loadu_si128(DL_SET.as_ptr() as *const __m128i);
+        let ws_vecs: [__m128i; 6] = [
+            _mm_set1_epi8(0x09),
+            _mm_set1_epi8(0x0A),
+            _mm_set1_epi8(0x0B),
+            _mm_set1_epi8(0x0C),
+            _mm_set1_epi8(0x0D),
+            _mm_set1_epi8(0x20),
         ];
-        let dl_set = [
-            b'(', b')', b'[', b']', b'\'', b'`', b',', b';', b'"', 0, 0, 0, 0, 0, 0, 0,
+        let dl_vecs: [__m128i; 9] = [
+            _mm_set1_epi8(b'(' as i8),
+            _mm_set1_epi8(b')' as i8),
+            _mm_set1_epi8(b'[' as i8),
+            _mm_set1_epi8(b']' as i8),
+            _mm_set1_epi8(b'\'' as i8),
+            _mm_set1_epi8(b'`' as i8),
+            _mm_set1_epi8(b',' as i8),
+            _mm_set1_epi8(b';' as i8),
+            _mm_set1_epi8(b'"' as i8),
         ];
-        let _ = &ws_set;
         let zero = _mm_setzero_si128();
+        let sign_mask_v = _mm_cmplt_epi8(zero, zero); // все единицы
         while pos + 16 <= bytes.len() {
             let v = _mm_loadu_si128(bytes.as_ptr().add(pos) as *const __m128i);
-            // WS: 6 точных сравнений (байт 0 в наборе совпадёт с нулевым байтом
-            // только в хвосте — здесь блок полный, нулевых байтов текста нет;
-            // для честности исключим b=0 сравнением отдельной маской ниже)
-            let mut m_ws = _mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8(0x09)));
-            for &w in &[0x0Au8, 0x0B, 0x0C, 0x0D, 0x20] {
-                m_ws |= _mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8(w as i8)));
+            // WS: точные 6 сравнений (байт 0 в наборе не даёт ложных срабатываний:
+            // в полном блоке текста нулевых байтов нет, а байт 0 — атом-символ)
+            let mut m_ws = _mm_movemask_epi8(_mm_cmpeq_epi8(v, ws_vecs[0]));
+            for w in ws_vecs[1..].iter() {
+                m_ws |= _mm_movemask_epi8(_mm_cmpeq_epi8(v, *w));
             }
-            let mut m_dl = 0i32;
-            for &d in &dl_set[..9] {
-                m_dl |= _mm_movemask_epi8(_mm_cmpeq_epi8(v, _mm_set1_epi8(d as i8)));
+            let mut m_dl = _mm_movemask_epi8(_mm_cmpeq_epi8(v, dl_vecs[0]));
+            for d in dl_vecs[1..].iter() {
+                m_dl |= _mm_movemask_epi8(_mm_cmpeq_epi8(v, *d));
             }
             // не-ASCII (байты >= 0x80 знаковые отрицательные)
             let m_na = _mm_movemask_epi8(_mm_cmplt_epi8(v, zero));
@@ -938,12 +961,13 @@ fn next_hit_sse2(bytes: &[u8], mut pos: usize) -> Option<(usize, Hit)> {
                 pos += 16;
                 continue;
             }
+            let _ = (&ws_v, &dl_v, &sign_mask_v);
             let bit = m_all.trailing_zeros() as usize;
             let b = bytes[pos + bit];
             let hit = hit_of(b);
-            // защита от ложного Ws на нулевом байте текста: 0x00 — NonAscii
-            if hit == Hit::Ws(0) || b == 0 {
-                return Some((pos + bit, Hit::NonAscii(b)));
+            if b == 0 {
+                // нулевой байт — атом-символ (семантика старого пути), не остановка
+                return next_hit_scalar(bytes, pos + bit + 1).map(|(i, h)| (i, h));
             }
             return Some((pos + bit, hit));
         }
