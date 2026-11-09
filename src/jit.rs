@@ -606,16 +606,25 @@ mod jit_tests {
                 vec![6.0, 7.0],
                 42.0,
             ),
+            ("(define f (lambda (x) (* x 0)))".into(), vec![5.0], 0.0),
+        ];
+        for (src, args, expect) in cases {
             let g = make_lambda(&src);
             let jf = compile(&Value::Lambda(g))
                 .unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
             let vals: Vec<Value> = args.iter().map(|v| Value::Float(*v)).collect();
+            let r = call_jitted(&jf, &vals).unwrap_or_else(|| panic!("гард упал: {}", src));
+            match r {
+                Value::Float(f) if f == expect => {}
                 other => panic!(
                     "{}: ждали {}, получили {}",
                     src,
                     expect,
                     crate::interp::fmt_value(&other)
                 ),
+            }
+        }
+    }
 
     #[test]
     fn jit_деоптимизация_unsupported() {
