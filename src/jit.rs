@@ -833,8 +833,14 @@ mod jit_tests {
         }
         println!(
             "свойственный тест: {} кейсов, compiled={}, deopt={}, сверено={}",
+            3000, compiled, deopt, checked
+        );
+        // регресс-порог: хотя бы половина случайных выражений должна JIT-компилироваться
         assert!(
             compiled >= 1500,
             "слишком много деоптимизаций: compiled={} из 3000",
             compiled
         );
+        assert!(checked >= 1500);
+    }
+}
