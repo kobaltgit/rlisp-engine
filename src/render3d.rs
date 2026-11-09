@@ -7,6 +7,14 @@
 // Примитивы:
 //   gpu3d-clear     — очистка цвета + z-буфера (+ сброс статистики кадра)
 //   gpu3d-light     — направленный свет и фоновая освещённость (fixed-function)
+//                     этап 7: + блик Blinn-Phong (spec, shininess — опц. аргументы)
+//   gpu3d-view      — позиция камеры в мире (для half-vector блика)
+//   gpu3d-mat-tiling— множители UV перед семплингом (repeat-текстуры)
+//   gpu3d-alpha-test— порог alpha (cutout): тексель с alpha < порога отбрасывается
+//                     ДО записи в z-буфер (семантика discard у GPU)
+//   gpu3d-fog       — экспоненциальный туман: 1 - exp(-density * глубина),
+//                     смешение ПОСЛЕ шейдинга, только для непрозрачных поверхностей
+//   gpu3d-state     — таблица текущего состояния конвейера (свет/блик/туман/…)
 //   gpu3d-mesh      — сетка: T&L → near-clip → backface cull → проекция →
 //                     z-буфер → flat-затенение (Lambert)
 //   gpu3d-mesh-tex  — то же + текстурирование: перспектива-корректный UV
@@ -37,6 +45,21 @@ pub struct R3 {
     pub diffuse: f32,
     pub drawn: u64,
     pub culled: u64,
+    // — этап 7 «материалы»: состояние конвейера, как у fixed-function GPU —
+    /// Порог alpha (cutout): 0 = выкл (дефолт); 0.1..1 — тексели текстурных
+    /// граней с alpha < порога отбрасываются целиком (и цвет, и z-запись).
+    pub alpha_test: f32,
+    /// Сила блика Blinn-Phong: 0 = выкл (дефолт, старое поведение Lambert).
+    pub spec: f32,
+    /// Показатель степени блика (шершавость): больше — пятно блика уже.
+    pub shininess: f32,
+    /// Позиция камеры в мире (gpu3d-view) — нужен для half-vector блика.
+    pub view: [f32; 3],
+    /// Множители UV перед семплингом: (1,1) — как раньше (clamp к краю),
+    /// (u,v) ≠ (1,1) — repeat через fract (тайлинг текстуры).
+    pub tiling: [f32; 2],
+    /// Туман: [r g b density]; density 0 = выкл (дефолт).
+    pub fog: [f32; 4],
 }
 
 impl Default for R3 {
@@ -56,6 +79,12 @@ impl R3 {
             diffuse: 0.75,
             drawn: 0,
             culled: 0,
+            alpha_test: 0.0,
+            spec: 0.0,
+            shininess: 32.0,
+            view: [0.0, 0.0, 0.0],
+            tiling: [1.0, 1.0],
+            fog: [0.7, 0.8, 0.9, 0.0],
         }
     }
 
@@ -70,6 +99,69 @@ impl R3 {
 
 fn col(x: f64) -> u8 {
     (x * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+// ——— этап 7 «материалы»: чистые функции ядра шейдинга (покрыты юнит-тестами) ———
+
+/// Фактор экспоненциального тумана: 1 - exp(-density * глубина).
+/// density 0 или глубина 0 → 0 (без тумана); растёт монотонно к 1.
+#[inline]
+pub(crate) fn fog_factor(density: f32, depth: f32) -> f32 {
+    (1.0 - (-(density.max(0.0) * depth.max(0.0))).exp()).clamp(0.0, 1.0)
+}
+
+/// Предикат alpha-test: тексель с alpha < порога отбрасывается.
+/// threshold <= 0 — тест выключен (всё проходит); граница включительная:
+/// alpha/255 == порог — тексель ОСТАЁТСЯ (как `if (a >= cutoff) discard` нет:
+/// у GPU обычно `alpha < cutoff → discard`, т.е. равный порогу проходит).
+#[inline]
+pub(crate) fn alpha_keep(a: u8, threshold: f32) -> bool {
+    threshold <= 0.0 || (a as f32 / 255.0) >= threshold
+}
+
+/// Координата семплинга с учётом тайлинга: tiling == 1 — координата как есть
+/// (старое поведение: clamp к краю текстуры), иначе repeat через fract.
+#[inline]
+pub(crate) fn tiled_coord(u: f32, tiling: f32) -> f32 {
+    if tiling == 1.0 {
+        u
+    } else {
+        (u * tiling).fract()
+    }
+}
+
+/// Интенсивность блика Blinn-Phong: strength * max(N·H, 0)^shininess.
+#[inline]
+pub(crate) fn spec_highlight(ndh: f32, shininess: f32, strength: f32) -> f32 {
+    if strength <= 0.0 || ndh <= 0.0 {
+        0.0
+    } else {
+        strength * ndh.powf(shininess.max(1.0))
+    }
+}
+
+/// Разбор аргументов gpu3d-light с честным фолбэком:
+/// (dx dy dz ambient [diffuse [spec [shininess]]]) —
+/// отсутствующие опциональные аргументы сохраняют прежнее состояние
+/// (старые вызовы с 4-5 аргументами работают байт-в-байт как раньше).
+pub(crate) fn apply_light_args(r3: &mut R3, args: &[Value]) -> Result<(), String> {
+    need_args(args, 4)?;
+    r3.light = [
+        num_val(&args[0])? as f32,
+        num_val(&args[1])? as f32,
+        num_val(&args[2])? as f32,
+    ];
+    r3.ambient = num_val(&args[3])? as f32;
+    if let Some(v) = args.get(4) {
+        r3.diffuse = num_val(v)? as f32;
+    }
+    if let Some(v) = args.get(5) {
+        r3.spec = num_val(v)?.max(0.0) as f32;
+    }
+    if let Some(v) = args.get(6) {
+        r3.shininess = num_val(v)?.max(1.0) as f32;
+    }
+    Ok(())
 }
 
 #[inline]
@@ -91,10 +183,12 @@ fn dot3(a: &[f32; 3], b: &[f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Вершина клип-пространства: [x y z w] + атрибуты u/w, v/w, 1/w.
+/// Вершина клип-пространства: [x y z w] + атрибуты u/w, v/w, 1/w, wx/w, wy/w, wz/w.
 /// Клиппинг Sutherland–Hodgman по плоскости z + w >= 0 (near).
-/// Атрибуты u/w и 1/w линейны вдоль ребра → интерполируются тем же t.
-fn clip_near6(poly: &[[f32; 7]]) -> Vec<[f32; 7]> {
+/// Атрибуты (u/w, 1/w, мир/w) линейны вдоль ребра → интерполируются тем же t.
+/// Мир/w нужен этапу 7: per-pixel half-vector блика (перспектива-корректная
+/// мировая позиция пикселя).
+fn clip_near6(poly: &[[f32; 10]]) -> Vec<[f32; 10]> {
     let mut out = Vec::with_capacity(poly.len() + 1);
     let n = poly.len();
     for i in 0..n {
@@ -109,15 +203,11 @@ fn clip_near6(poly: &[[f32; 7]]) -> Vec<[f32; 7]> {
         }
         if a_in != b_in {
             let t = da / (da - db);
-            out.push([
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-                a[2] + (b[2] - a[2]) * t,
-                a[3] + (b[3] - a[3]) * t,
-                a[4] + (b[4] - a[4]) * t,
-                a[5] + (b[5] - a[5]) * t,
-                a[6] + (b[6] - a[6]) * t,
-            ]);
+            let mut v = [0.0f32; 10];
+            for k in 0..10 {
+                v[k] = a[k] + (b[k] - a[k]) * t;
+            }
+            out.push(v);
         }
     }
     out
@@ -127,12 +217,15 @@ struct Vtx {
     sx: f32,
     sy: f32,
     sz: f32,
-    uq: f32, // u/w
-    vq: f32, // v/w
-    iw: f32, // 1/w
+    uq: f32,  // u/w
+    vq: f32,  // v/w
+    iw: f32,  // 1/w
+    wxq: f32, // мир.x/w (этап 7: блик)
+    wyq: f32, // мир.y/w
+    wzq: f32, // мир.z/w
 }
 
-fn project6(c: &[f32; 7], w: usize, h: usize) -> Option<Vtx> {
+fn project6(c: &[f32; 10], w: usize, h: usize) -> Option<Vtx> {
     if c[3] <= 1e-6 {
         return None;
     }
@@ -143,9 +236,12 @@ fn project6(c: &[f32; 7], w: usize, h: usize) -> Option<Vtx> {
         sx: (nx * 0.5 + 0.5) * w as f32,
         sy: (1.0 - (ny * 0.5 + 0.5)) * h as f32, // y вниз, как в фреймбуфере
         sz: nz,
-        uq: c[4], // u/w
-        vq: c[5], // v/w
-        iw: c[6], // 1/w
+        uq: c[4],  // u/w
+        vq: c[5],  // v/w
+        iw: c[6],  // 1/w
+        wxq: c[7], // мир/w
+        wyq: c[8],
+        wzq: c[9],
     })
 }
 
@@ -164,6 +260,9 @@ fn project(c: &[f32; 4], w: usize, h: usize) -> Option<Vtx> {
         uq: 0.0,
         vq: 0.0,
         iw: inv,
+        wxq: 0.0,
+        wyq: 0.0,
+        wzq: 0.0,
     })
 }
 
@@ -231,9 +330,12 @@ fn transform_all(
 fn inst_matrix(ins: &[f32], out: &mut [f32; 16]) {
     let (tx, ty, tz) = (ins[0], ins[1], ins[2]);
     let (sx, sy, sz) = (ins[3], ins[4], ins[5]);
-    let (cy, syw) = ins[6].sin_cos();
-    let (cx, sxi) = ins[7].sin_cos();
-    let (cz, szi) = ins[8].sin_cos();
+    // ВАЖНО: f32::sin_cos возвращает (sin, cos) — не (cos, sin)!
+    // (баг мастер-ветки: перепутанная связка ломала матрицу инстанса —
+    // оси подменялись, батчи рисовались «сплющенными»)
+    let (syw, cy) = ins[6].sin_cos();
+    let (sxi, cx) = ins[7].sin_cos();
+    let (szi, cz) = ins[8].sin_cos();
     // R = Ry · Rx · Rz
     // Ry·Rx:
     //   [ cy  sy*sx  sy*cx ]
@@ -427,8 +529,9 @@ fn mesh_draw(
 
 /// Батч-вершинник: инстансы разворачиваются в общие world/clip/uv/tint-массивы,
 /// индексы смещаются, затем ОДНА растеризация на все инстансы.
+/// pub(crate): доступен бенчмарку 3D-шейдинга (main.rs, этап 7).
 #[allow(clippy::too_many_arguments)]
-fn batch_draw(
+pub(crate) fn batch_draw(
     hal: &mut Hal,
     pos: &[f32],
     uv: Option<&[f32]>,
@@ -571,13 +674,14 @@ fn raster_tris(
             }
             tri[k] = vi as usize;
         }
-        // полигон в клип-пространстве + атрибуты u/w, v/w, 1/w
-        let mut poly: Vec<[f32; 7]> = Vec::with_capacity(3);
+        // полигон в клип-пространстве + атрибуты u/w, v/w, 1/w, мир/w
+        let mut poly: Vec<[f32; 10]> = Vec::with_capacity(3);
         for &t in &tri {
             let cw = clip[t * 4 + 3];
             let iw = if cw > 1e-6 { 1.0 / cw } else { 0.0 };
-            // перспективно-корректные атрибуты: в полигон идут u/w и v/w
-            // (они, как и 1/w, аффинны на ребре — клиппинг и растр корректны)
+            // перспективно-корректные атрибуты: в полигон идут u/w, v/w и
+            // мировая позиция /w (они, как и 1/w, аффинны на ребре — клиппинг
+            // и растр корректны); мир/w нужен per-pixel блику этапа 7
             let (uq, vq) = if let Some(u) = uvq {
                 (u[t * 2] * iw, u[t * 2 + 1] * iw)
             } else {
@@ -591,6 +695,9 @@ fn raster_tris(
                 uq,
                 vq,
                 iw,
+                world[t * 3] * iw,
+                world[t * 3 + 1] * iw,
+                world[t * 3 + 2] * iw,
             ]);
         }
 
@@ -620,6 +727,15 @@ fn raster_tris(
             *culled += 1;
             continue;
         }
+
+        // — состояние материалов (этап 7): выключенные фичи — ноль расходов —
+        let spec_on = r3.spec > 0.0;
+        let (spec, shininess) = (r3.spec, r3.shininess);
+        let fog_on = r3.fog[3] > 0.0;
+        let (fog_density, fog_r, fog_g, fog_b) = (r3.fog[3], r3.fog[0], r3.fog[1], r3.fog[2]);
+        let alpha_on = r3.alpha_test > 0.0;
+        let alpha_thr = r3.alpha_test;
+        let (tu, tv) = (r3.tiling[0], r3.tiling[1]);
 
         // вентилятор: (0, k, k+1)
         for kk in 1..pts.len() - 1 {
@@ -652,10 +768,15 @@ fn raster_tris(
             let e2 = [wc[0] - wa[0], wc[1] - wa[1], wc[2] - wa[2]];
             let nrm = cross3(&e1, &e2);
             let nl = dot3(&nrm, &nrm).sqrt();
+            let nnrm = if nl < 1e-9 {
+                [0.0f32; 3]
+            } else {
+                [nrm[0] / nl, nrm[1] / nl, nrm[2] / nl]
+            };
             let shade = if nl < 1e-9 {
                 ambient
             } else {
-                let ndl = dot3(&[nrm[0] / nl, nrm[1] / nl, nrm[2] / nl], light);
+                let ndl = dot3(&nnrm, light);
                 (ambient + diffuse * ndl.max(0.0)).clamp(0.0, 1.0)
             };
             // цвет грани: тинт первой вершины (у батча — свой на инстанс)
@@ -707,27 +828,122 @@ fn raster_tris(
                         };
                         let pi = row + px as usize;
                         if z < r3.zbuf[pi] {
-                            r3.zbuf[pi] = z;
                             let o = pi * 4;
+                            // перспектива-корректный 1/w пикселя; истинная
+                            // глубина = 1/(1/w) = w_clip = -z_view (перспектива
+                            // render3d.lisp), она же — глубина тумана
+                            let iwp = (w0 * p0.iw + w1 * p1.iw + w2 * p2.iw) / sum;
+                            // блик Blinn-Phong (этап 7): half-vector на
+                            // перспектива-корректной мировой позиции пикселя
+                            let s = if spec_on && iwp.abs() > 1e-12 {
+                                let wx = ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp;
+                                let wy = ((w0 * p0.wyq + w1 * p1.wyq + w2 * p2.wyq) / sum) / iwp;
+                                let wz = ((w0 * p0.wzq + w1 * p1.wzq + w2 * p2.wzq) / sum) / iwp;
+                                let v = [r3.view[0] - wx, r3.view[1] - wy, r3.view[2] - wz];
+                                let vl = dot3(&v, &v).sqrt().max(1e-9);
+                                let hv = [
+                                    light[0] + v[0] / vl,
+                                    light[1] + v[1] / vl,
+                                    light[2] + v[2] / vl,
+                                ];
+                                let hl = dot3(&hv, &hv).sqrt().max(1e-9);
+                                spec_highlight(
+                                    dot3(&nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
+                                    shininess,
+                                    spec,
+                                )
+                            } else {
+                                0.0
+                            };
+                            // туман (этап 7): фактор по истинной глубине,
+                            // смешение ПОСЛЕ шейдинга и блика
+                            let fogf = if fog_on {
+                                fog_factor(fog_density, if iwp > 1e-9 { 1.0 / iwp } else { 1e9 })
+                            } else {
+                                0.0
+                            };
                             if let Some(t) = tex {
                                 // перспектива-корректный UV: (u/w)/(1/w)
-                                let iw = (w0 * p0.iw + w1 * p1.iw + w2 * p2.iw) / sum;
                                 let uq = (w0 * p0.uq + w1 * p1.uq + w2 * p2.uq) / sum;
                                 let vq = (w0 * p0.vq + w1 * p1.vq + w2 * p2.vq) / sum;
-                                if iw.abs() > 1e-12 {
-                                    let uu = ((uq / iw).clamp(0.0, 0.99999) * tw as f32) as usize;
-                                    let vv = ((vq / iw).clamp(0.0, 0.99999) * th as f32) as usize;
+                                if iwp.abs() > 1e-12 {
+                                    // тайлинг (этап 7): (1,1) — как раньше
+                                    // (clamp к краю); иначе repeat через fract
+                                    let uf = tiled_coord(uq / iwp, tu);
+                                    let vf = tiled_coord(vq / iwp, tv);
+                                    let uu = (uf.clamp(0.0, 0.99999) * tw as f32) as usize;
+                                    let vv = (vf.clamp(0.0, 0.99999) * th as f32) as usize;
                                     let ti = (vv * tw + uu) * 4;
-                                    let texel = &t.px[ti..ti + 3];
-                                    // lambert · тинт · тексель
-                                    fb[o] = col(texel[0] as f64 / 255.0 * tr as f64 * shade as f64);
-                                    fb[o + 1] =
-                                        col(texel[1] as f64 / 255.0 * tg as f64 * shade as f64);
-                                    fb[o + 2] =
-                                        col(texel[2] as f64 / 255.0 * tb as f64 * shade as f64);
-                                    fb[o + 3] = 255;
+                                    let texel = &t.px[ti..ti + 4];
+                                    // alpha-test (этап 7): discard ДО записи z —
+                                    // за дыркой билборда видно то, что позади
+                                    if alpha_on && !alpha_keep(texel[3], alpha_thr) {
+                                        continue;
+                                    }
+                                    if spec_on || fog_on {
+                                        let mut c0 =
+                                            (texel[0] as f64 / 255.0 * tr as f64 * shade as f64)
+                                                as f32;
+                                        let mut c1 =
+                                            (texel[1] as f64 / 255.0 * tg as f64 * shade as f64)
+                                                as f32;
+                                        let mut c2 =
+                                            (texel[2] as f64 / 255.0 * tb as f64 * shade as f64)
+                                                as f32;
+                                        if spec_on {
+                                            c0 = (c0 + s).min(1.0);
+                                            c1 = (c1 + s).min(1.0);
+                                            c2 = (c2 + s).min(1.0);
+                                        }
+                                        if fog_on {
+                                            let g = 1.0 - fogf;
+                                            c0 = c0 * g + fog_r * fogf;
+                                            c1 = c1 * g + fog_g * fogf;
+                                            c2 = c2 * g + fog_b * fogf;
+                                        }
+                                        r3.zbuf[pi] = z;
+                                        fb[o] = col(c0 as f64);
+                                        fb[o + 1] = col(c1 as f64);
+                                        fb[o + 2] = col(c2 as f64);
+                                        fb[o + 3] = 255;
+                                    } else {
+                                        // lambert · тинт · тексель (как раньше)
+                                        r3.zbuf[pi] = z;
+                                        fb[o] =
+                                            col(texel[0] as f64 / 255.0 * tr as f64 * shade as f64);
+                                        fb[o + 1] =
+                                            col(texel[1] as f64 / 255.0 * tg as f64 * shade as f64);
+                                        fb[o + 2] =
+                                            col(texel[2] as f64 / 255.0 * tb as f64 * shade as f64);
+                                        fb[o + 3] = 255;
+                                    }
+                                } else {
+                                    // деградированный iw — как раньше: z пишется,
+                                    // цвет нет
+                                    r3.zbuf[pi] = z;
                                 }
+                            } else if spec_on || fog_on {
+                                let mut c0 = tr * shade;
+                                let mut c1 = tg * shade;
+                                let mut c2 = tb * shade;
+                                if spec_on {
+                                    c0 = (c0 + s).min(1.0);
+                                    c1 = (c1 + s).min(1.0);
+                                    c2 = (c2 + s).min(1.0);
+                                }
+                                if fog_on {
+                                    let g = 1.0 - fogf;
+                                    c0 = c0 * g + fog_r * fogf;
+                                    c1 = c1 * g + fog_g * fogf;
+                                    c2 = c2 * g + fog_b * fogf;
+                                }
+                                r3.zbuf[pi] = z;
+                                fb[o] = col(c0 as f64);
+                                fb[o + 1] = col(c1 as f64);
+                                fb[o + 2] = col(c2 as f64);
+                                fb[o + 3] = 255;
                             } else {
+                                r3.zbuf[pi] = z;
                                 fb[o] = cr;
                                 fb[o + 1] = cg;
                                 fb[o + 2] = cb;
@@ -799,20 +1015,107 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Nil)
     });
 
+    // свет: (gpu3d-light dx dy dz ambient [diffuse [spec [shininess]]]) —
+    // опц. аргументы этапа 7: сила блика Blinn-Phong и его показатель.
+    // Прежние вызовы (4-5 аргументов) ведут себя байт-в-байт как раньше.
     let hc = hal.clone();
     def(env, "gpu3d-light", move |args| {
-        need(args, 4)?;
         let mut h = hc.borrow_mut();
-        h.r3.light = [
+        apply_light_args(&mut h.r3, args)?;
+        Ok(Value::Nil)
+    });
+
+    // позиция камеры в мире (для half-vector блика Blinn-Phong)
+    let hc = hal.clone();
+    def(env, "gpu3d-view", move |args| {
+        need(args, 3)?;
+        let mut h = hc.borrow_mut();
+        h.r3.view = [
             num_val(&args[0])? as f32,
             num_val(&args[1])? as f32,
             num_val(&args[2])? as f32,
         ];
-        h.r3.ambient = num_val(&args[3])? as f32;
-        if let Some(v) = args.get(4) {
-            h.r3.diffuse = num_val(v)? as f32;
-        }
         Ok(Value::Nil)
+    });
+
+    // тайлинг UV: (gpu3d-mat-tiling u v) — множители перед семплингом
+    // (repeat-текстуры: трава, стены). (gpu3d-mat-tiling 1 1) — сброс/выкл.
+    let hc = hal.clone();
+    def(env, "gpu3d-mat-tiling", move |args| {
+        need(args, 2)?;
+        let mut h = hc.borrow_mut();
+        h.r3.tiling = [
+            num_val(&args[0])?.clamp(0.0, 1024.0) as f32,
+            num_val(&args[1])?.clamp(0.0, 1024.0) as f32,
+        ];
+        Ok(Value::Nil)
+    });
+
+    // alpha-test (cutout): (gpu3d-alpha-test threshold) —
+    // 0 = выкл (дефолт); 0.1..1 — тексели с alpha < порога отбрасываются
+    // ДО записи в z-буфер (за дыркой в билборде видно то, что позади).
+    let hc = hal.clone();
+    def(env, "gpu3d-alpha-test", move |args| {
+        need(args, 1)?;
+        let mut h = hc.borrow_mut();
+        h.r3.alpha_test = num_val(&args[0])?.clamp(0.0, 1.0) as f32;
+        Ok(Value::Nil)
+    });
+
+    // туман: (gpu3d-fog r g b density) — экспоненциальный, по истинной
+    // глубине (1/w), смешение после шейдинга; density 0 = выкл (дефолт).
+    let hc = hal.clone();
+    def(env, "gpu3d-fog", move |args| {
+        need(args, 4)?;
+        let mut h = hc.borrow_mut();
+        h.r3.fog = [
+            num_val(&args[0])?.clamp(0.0, 1.0) as f32,
+            num_val(&args[1])?.clamp(0.0, 1.0) as f32,
+            num_val(&args[2])?.clamp(0.0, 1.0) as f32,
+            num_val(&args[3])?.clamp(0.0, 100.0) as f32,
+        ];
+        Ok(Value::Nil)
+    });
+
+    // инспекция состояния конвейера (материалы/редактор/отладка):
+    // таблица с ключами light/ambient/diffuse/spec/shininess/view/tiling/
+    // alpha-test/fog
+    let hc = hal.clone();
+    def(env, "gpu3d-state", move |_: &[Value]| {
+        let h = hc.borrow();
+        let r3 = &h.r3;
+        let v3 = |a: [f32; 3]| {
+            Value::List(vec![
+                Value::Float(a[0] as f64),
+                Value::Float(a[1] as f64),
+                Value::Float(a[2] as f64),
+            ])
+        };
+        let mut t = std::collections::HashMap::new();
+        t.insert("light".into(), v3(r3.light));
+        t.insert("ambient".into(), Value::Float(r3.ambient as f64));
+        t.insert("diffuse".into(), Value::Float(r3.diffuse as f64));
+        t.insert("spec".into(), Value::Float(r3.spec as f64));
+        t.insert("shininess".into(), Value::Float(r3.shininess as f64));
+        t.insert("view".into(), v3(r3.view));
+        t.insert(
+            "tiling".into(),
+            Value::List(vec![
+                Value::Float(r3.tiling[0] as f64),
+                Value::Float(r3.tiling[1] as f64),
+            ]),
+        );
+        t.insert("alpha-test".into(), Value::Float(r3.alpha_test as f64));
+        t.insert(
+            "fog".into(),
+            Value::List(vec![
+                Value::Float(r3.fog[0] as f64),
+                Value::Float(r3.fog[1] as f64),
+                Value::Float(r3.fog[2] as f64),
+                Value::Float(r3.fog[3] as f64),
+            ]),
+        );
+        Ok(Value::Table(Rc::new(RefCell::new(t))))
     });
 
     let hc = hal.clone();
@@ -937,4 +1240,381 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             Value::Int(h.r3.culled as i64),
         ]))
     });
+}
+
+// ————————————————————————————————————————————————————————————————————————
+// Тесты этапа 7 «материалы»: чистые функции ядра шейдинга + разбор
+// аргументов света с фолбэком. Растеризация покрывается интеграционно
+// (smoke.sh + --capture в M3), здесь — математика.
+// ————————————————————————————————————————————————————————————————————————
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn близко(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn кривая_тумана_экспоненциальная_и_монотонная() {
+        // density 0 или глубина 0 — тумана нет
+        assert!(близко(fog_factor(0.0, 100.0), 0.0));
+        assert!(близко(fog_factor(0.25, 0.0), 0.0));
+        // эталонные точки: 1 - exp(-d*x)
+        assert!(близко(fog_factor(0.1, 10.0), 1.0 - (-1.0f32).exp()));
+        assert!(близко(fog_factor(1.0, 5.0), 1.0 - (-5.0f32).exp()));
+        assert!(близко(fog_factor(2.0, 2.0), 1.0 - (-4.0f32).exp()));
+        // монотонность по обеим переменным, насыщение ≤ 1
+        assert!(fog_factor(0.1, 20.0) > fog_factor(0.1, 10.0));
+        assert!(fog_factor(0.2, 10.0) > fog_factor(0.1, 10.0));
+        assert!(fog_factor(100.0, 100.0) <= 1.0);
+        // отрицательные входы (мусор от скрипта) не паникуют и не дают < 0
+        assert!(близко(fog_factor(-1.0, 10.0), 0.0));
+        assert!(близко(fog_factor(0.1, -5.0), 0.0));
+    }
+
+    #[test]
+    fn альфа_тест_граница_включительная() {
+        // выкл: порог 0 пропускает всё, включая полностью прозрачное
+        assert!(alpha_keep(0, 0.0));
+        // граница: alpha/255 == порог — тексель ОСТАЁТСЯ
+        assert!(alpha_keep(26, 0.1)); // 26/255 = 0.10196 ≥ 0.1
+        assert!(!alpha_keep(25, 0.1)); // 25/255 = 0.09804 < 0.1
+                                       // полный альфа-канал проходит даже при пороге 1
+        assert!(alpha_keep(255, 1.0));
+        assert!(!alpha_keep(254, 1.0));
+        // порог 0.5: граница 127/128
+        assert!(!alpha_keep(127, 0.5)); // 0.498 < 0.5
+        assert!(alpha_keep(128, 0.5)); // 0.502 ≥ 0.5
+    }
+
+    #[test]
+    fn тайлинг_математика_repeat_и_пасsthrough() {
+        // tiling 1 — координата без изменений (старое поведение clamp)
+        assert!(близко(tiled_coord(0.75, 1.0), 0.75));
+        assert!(близко(tiled_coord(0.0, 1.0), 0.0));
+        assert!(близко(tiled_coord(1.0, 1.0), 1.0));
+        // repeat: u=0.75 при tiling 2 → 1.5 → fract 0.5
+        assert!(близко(tiled_coord(0.75, 2.0), 0.5));
+        // u=1.0 при tiling 2 → 2.0 → fract 0 (шов стыкуется с началом)
+        assert!(близко(tiled_coord(1.0, 2.0), 0.0));
+        // u=1.3 при tiling 3 → 3.9 → fract 0.9
+        assert!(близко(tiled_coord(1.3, 3.0), 0.9));
+        // нулевой tiling схлопывает координату в 0
+        assert!(близко(tiled_coord(0.42, 0.0), 0.0));
+    }
+
+    #[test]
+    fn блик_блинн_фонга_нулевые_и_граничные() {
+        // сила 0 — блика нет (старый Lambert-путь, ноль накладных расходов)
+        assert!(близко(spec_highlight(0.9, 32.0, 0.0), 0.0));
+        // N·H ≤ 0 — блик нет (half-vector за гранью)
+        assert!(близко(spec_highlight(0.0, 32.0, 1.0), 0.0));
+        assert!(близко(spec_highlight(-0.5, 32.0, 1.0), 0.0));
+        // идеальное отражение: N·H = 1 → ровно strength (любая shininess)
+        assert!(близко(spec_highlight(1.0, 32.0, 0.7), 0.7));
+        assert!(близко(spec_highlight(1.0, 1.0, 0.7), 0.7));
+        // рост показателя сужает блик: при N·H=0.5 и shininess 1 → 0.5*strength
+        assert!(близко(spec_highlight(0.5, 1.0, 1.0), 0.5));
+        assert!(spec_highlight(0.5, 64.0, 1.0) < spec_highlight(0.5, 8.0, 1.0));
+        // shininess < 1 из скрипта поднимается до 1 (powf корректен)
+        assert!(близко(spec_highlight(0.5, 0.0, 1.0), 0.5));
+    }
+
+    #[test]
+    fn свет_разбор_аргументов_фолбэк_прежнее_состояние() {
+        let f = |x: f64| Value::Float(x);
+        // старый вызов 4 аргументов: spec остаётся прежним (0 по умолчанию)
+        let mut r3 = R3::new();
+        apply_light_args(&mut r3, &[f(0.1), f(0.2), f(0.3), f(0.4)]).unwrap();
+        assert!(близко(r3.light[0], 0.1));
+        assert!(близко(r3.ambient, 0.4));
+        assert!(близко(r3.diffuse, 0.75)); // дефолт не тронут
+        assert!(близко(r3.spec, 0.0));
+        assert!(близко(r3.shininess, 32.0));
+        // 5 аргументов (как было в v0.2+): diffuse задаётся, spec не трогается
+        let mut r3 = R3::new();
+        apply_light_args(&mut r3, &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9)]).unwrap();
+        assert!(близко(r3.diffuse, 0.9));
+        assert!(близко(r3.spec, 0.0));
+        // 7 аргументов: включает блик
+        apply_light_args(
+            &mut r3,
+            &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9), f(0.6), f(16.0)],
+        )
+        .unwrap();
+        assert!(близко(r3.spec, 0.6));
+        assert!(близко(r3.shininess, 16.0));
+        // фолбэк: 6 аргументов — shininess сохраняет прежнее значение
+        apply_light_args(&mut r3, &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9), f(0.3)]).unwrap();
+        assert!(близко(r3.spec, 0.3));
+        assert!(близко(r3.shininess, 16.0));
+        // мусорные значения: отрицательный spec/shininess срезаются
+        apply_light_args(
+            &mut r3,
+            &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9), f(-1.0), f(0.0)],
+        )
+        .unwrap();
+        assert!(близко(r3.spec, 0.0));
+        assert!(близко(r3.shininess, 1.0));
+        // мало аргументов — честная ошибка, состояние не меняется
+        let mut r3 = R3::new();
+        assert!(apply_light_args(&mut r3, &[f(0.1), f(0.2), f(0.3)]).is_err());
+        assert!(близко(r3.light[0], 0.45)); // дефолт
+    }
+
+    // ——— интеграционные: растр этапа 7 через mesh_draw (программный путь) ——
+
+    use crate::hal::{Hal, OutputMode, Tex};
+
+    /// Единичные матрицы (model, mvp): клип = мир, w = 1.
+    fn ед_матрицы() -> Vec<f32> {
+        let mut m = vec![0.0f32; 16];
+        m[0] = 1.0;
+        m[5] = 1.0;
+        m[10] = 1.0;
+        m[15] = 1.0;
+        let mut out = m.clone();
+        out.extend_from_slice(&m);
+        out
+    }
+
+    /// Квадрат на глубине z во весь экран 8x8 (CCW-лицевой после y-flip).
+    fn рисуем_квадрат(hal: &mut Hal, tex: i64, z: f32, uv: &[f32]) {
+        let pos = [-1.0f32, -1.0, z, 1.0, -1.0, z, 1.0, 1.0, z, -1.0, 1.0, z];
+        let idx = [0.0f32, 1.0, 2.0, 0.0, 2.0, 3.0];
+        let mm = ед_матрицы();
+        let (model, mvp) = (&mm[0..16], &mm[16..32]);
+        mesh_draw(
+            hal,
+            &pos,
+            Some(uv),
+            &idx,
+            model,
+            mvp,
+            1.0,
+            1.0,
+            1.0,
+            tex,
+            Prim::Tri,
+        )
+        .unwrap();
+    }
+
+    fn пиксель(hal: &Hal, x: usize, y: usize) -> [u8; 4] {
+        let o = (y * hal.w + x) * 4;
+        [hal.fb[o], hal.fb[o + 1], hal.fb[o + 2], hal.fb[o + 3]]
+    }
+
+    fn сброс_света(hal: &mut Hal) {
+        hal.r3.light = [0.45, 0.8, 0.35];
+        hal.r3.ambient = 0.35;
+        hal.r3.diffuse = 0.75;
+        hal.r3.alpha_test = 0.0;
+        hal.r3.spec = 0.0;
+        hal.r3.shininess = 32.0;
+        hal.r3.view = [0.0, 0.0, 0.0];
+        hal.r3.tiling = [1.0, 1.0];
+        hal.r3.fog = [0.7, 0.8, 0.9, 0.0];
+    }
+
+    #[test]
+    fn матрица_инстанса_yaw_по_конвенции() {
+        // Регрессия: f32::sin_cos возвращает (sin, cos) — прежняя связка
+        // перепутывала оси и ломала все батчи. Проверка конвенции
+        // M = T·Ry·Rx·Rz·S: yaw=π/2 переводит +X в -Z (колоночный вектор).
+        let pi2 = std::f32::consts::FRAC_PI_2;
+        let mut m = [0.0f32; 16];
+        inst_matrix(
+            &[5.0, 6.0, 7.0, 1.0, 1.0, 1.0, pi2, 0.0, 0.0, 1.0, 1.0, 1.0],
+            &mut m,
+        );
+        // вершина (1, 0, 0): world = R·v + t = (0, 0, -1) + (5, 6, 7)
+        let wx = m[0] * 1.0 + m[3];
+        let wy = m[4] * 1.0 + m[7];
+        let wz = m[8] * 1.0 + m[11];
+        assert!(близко(wx, 5.0), "wx = {}", wx);
+        assert!(близко(wy, 6.0), "wy = {}", wy);
+        assert!(близко(wz, 7.0 - 1.0), "wz = {}", wz);
+        // масштаб: вершина (0, 2, 0) → (2, 0) → world y = 6 + 2
+        let wy2 = m[5] * 2.0 + m[7];
+        assert!(близко(wy2, 8.0), "wy2 = {}", wy2);
+        // нулевые углы — диагональная матрица масштаба
+        inst_matrix(
+            &[0.0, 0.0, 0.0, 0.4, 0.4, 0.4, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            &mut m,
+        );
+        assert!(близко(m[0], 0.4) && близко(m[5], 0.4) && близко(m[10], 0.4));
+        assert!(близко(m[1] + m[2] + m[4] + m[6] + m[8] + m[9], 0.0));
+    }
+
+    #[test]
+    fn растр_alpha_test_вырезает_и_z_не_пишет() {
+        // 2x2 текстура: 3 текселя маджента непрозрачные, угловой (u=1,v=1)
+        // полностью прозрачный (alpha 0). Далёкий зелёный квадрат на z=0.9,
+        // близкий текстурный с дыркой на z=0.5.
+        let px = vec![
+            255u8, 0, 255, 255, 255, 0, 255, 255, 255, 0, 255, 255, 9, 9, 9, 0,
+        ];
+        let зелёный = || Tex {
+            w: 1,
+            h: 1,
+            px: vec![0, 255, 0, 255],
+        };
+        let uv = [0.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+        let плоский_свет = |hal: &mut Hal| {
+            сброс_света(hal);
+            hal.r3.light = [0.0, 0.0, 1.0];
+            hal.r3.ambient = 1.0;
+            hal.r3.diffuse = 0.0; // свет плоский: цвет = тексель·тинт
+        };
+
+        // без alpha-test близкий квадрат перекрывает ВСЁ маджентой
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.tex.push(Tex {
+            w: 2,
+            h: 2,
+            px: px.clone(),
+        });
+        hal.tex.push(зелёный());
+        hal.fill_all(0, 0, 0);
+        плоский_свет(&mut hal);
+        рисуем_квадрат(&mut hal, 2, 0.9, &uv);
+        assert_eq!(пиксель(&hal, 0, 0), [0, 255, 0, 255]);
+        рисуем_квадрат(&mut hal, 1, 0.5, &uv);
+        assert_eq!(пиксель(&hal, 0, 0), [255, 0, 255, 255]);
+        assert_eq!(пиксель(&hal, 7, 7), [255, 0, 255, 255]);
+
+        // с alpha-test 0.5 прозрачный тексель отброшен — сквозь дыру виден
+        // зелёный дальний квадрат: discard не пишет ни цвет, ни z.
+        // Ориентация: v=1 → верх экрана (y-flip), u=1 → право; дыра (тексель
+        // u=1,v=1) — правый верхний квадрант, напр. пиксель (7,0)
+        let mut hal2 = Hal::new(OutputMode::Silent, 8, 8);
+        hal2.tex.push(Tex {
+            w: 2,
+            h: 2,
+            px: px.clone(),
+        });
+        hal2.tex.push(зелёный());
+        hal2.fill_all(0, 0, 0);
+        плоский_свет(&mut hal2);
+        рисуем_квадрат(&mut hal2, 2, 0.9, &uv);
+        hal2.r3.alpha_test = 0.5;
+        рисуем_квадрат(&mut hal2, 1, 0.5, &uv);
+        assert_eq!(пиксель(&hal2, 7, 0), [0, 255, 0, 255]);
+        assert_eq!(пиксель(&hal2, 4, 1), [0, 255, 0, 255]);
+        // непрозрачные тексели рисуются как раньше
+        assert_eq!(пиксель(&hal2, 0, 0), [255, 0, 255, 255]);
+        assert_eq!(пиксель(&hal2, 7, 7), [255, 0, 255, 255]);
+        assert_eq!(пиксель(&hal2, 0, 7), [255, 0, 255, 255]);
+    }
+
+    #[test]
+    fn растр_туман_смешивает_после_шейдинга() {
+        // белый квадрат, свет вдоль (0, 0.6, 0.8): ndl = 0.8 →
+        // shade = 0.35 + 0.75·0.8 = 0.95 → 242
+        let свет = |hal: &mut Hal| {
+            сброс_света(hal);
+            hal.r3.light = [0.0, 0.6, 0.8];
+        };
+        let uv = [0.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        свет(&mut hal);
+        рисуем_квадрат(&mut hal, 0, 0.5, &uv);
+        assert_eq!(пиксель(&hal, 4, 4), [242, 242, 242, 255]);
+
+        // красный туман density 50 на глубине 1.0: фактор ≈ 1 → цвет тумана
+        let mut hal2 = Hal::new(OutputMode::Silent, 8, 8);
+        hal2.fill_all(0, 0, 0);
+        свет(&mut hal2);
+        hal2.r3.fog = [1.0, 0.0, 0.0, 50.0];
+        рисуем_квадрат(&mut hal2, 0, 0.5, &uv);
+        assert_eq!(пиксель(&hal2, 4, 4), [255, 0, 0, 255]);
+
+        // слабый туман: точное значение по формуле на истинной глубине w=1
+        let f = fog_factor(0.1, 1.0);
+        let ожид_r = 0.95 * (1.0 - f) + f;
+        let ожид_g = 0.95 * (1.0 - f);
+        let mut hal3 = Hal::new(OutputMode::Silent, 8, 8);
+        hal3.fill_all(0, 0, 0);
+        свет(&mut hal3);
+        hal3.r3.fog = [1.0, 0.0, 0.0, 0.1];
+        рисуем_квадрат(&mut hal3, 0, 0.5, &uv);
+        let c = пиксель(&hal3, 4, 4);
+        assert_eq!(c[0], col(ожид_r as f64));
+        assert_eq!(c[1], col(ожид_g as f64));
+    }
+
+    #[test]
+    fn растр_блик_блинн_фонга_ярче_lambert() {
+        let uv = [0.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+        // камера на +Z (view (0,0,5)), квадрат в z=0.5, свет (0, 0.6, 0.8):
+        // Lambert = 0.95 → 242; half-vector блик у центра добавляет ~0.16 →
+        // 0.95+0.16 > 1 → clamp → белый
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        сброс_света(&mut hal);
+        hal.r3.light = [0.0, 0.6, 0.8];
+        рисуем_квадрат(&mut hal, 0, 0.5, &uv);
+        let ламберт = пиксель(&hal, 4, 4);
+        assert_eq!(ламберт, [242, 242, 242, 255]);
+
+        let mut hal2 = Hal::new(OutputMode::Silent, 8, 8);
+        hal2.fill_all(0, 0, 0);
+        сброс_света(&mut hal2);
+        hal2.r3.light = [0.0, 0.6, 0.8];
+        hal2.r3.view = [0.0, 0.0, 5.0];
+        hal2.r3.spec = 1.0;
+        hal2.r3.shininess = 32.0;
+        рисуем_квадрат(&mut hal2, 0, 0.5, &uv);
+        let с_бликом = пиксель(&hal2, 4, 4);
+        assert_eq!(с_бликом, [255, 255, 255, 255]);
+        assert!(с_бликом[0] > ламберт[0]);
+    }
+
+    #[test]
+    fn растр_тайлинг_repeat_меняет_семпл() {
+        // 4x1 текстура: столбцы красный / зелёный / синий / белый
+        let tex = Tex {
+            w: 4,
+            h: 1,
+            px: vec![
+                255, 0, 0, 255, // u ∈ [0, 0.25)
+                0, 255, 0, 255, // u ∈ [0.25, 0.5)
+                0, 0, 255, 255, // u ∈ [0.5, 0.75)
+                255, 255, 255, 255, // u ∈ [0.75, 1)
+            ],
+        };
+        let uv = [0.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+        let плоский_свет = |hal: &mut Hal| {
+            сброс_света(hal);
+            hal.r3.light = [0.0, 0.0, 1.0];
+            hal.r3.ambient = 1.0;
+            hal.r3.diffuse = 0.0;
+        };
+
+        // без тайлинга пиксель (4,y): fx=4.5 → u≈0.5625 → столбец 2 (синий)
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.tex.push(tex.clone());
+        hal.fill_all(0, 0, 0);
+        плоский_свет(&mut hal);
+        рисуем_квадрат(&mut hal, 1, 0.5, &uv);
+        assert_eq!(пиксель(&hal, 4, 4), [0, 0, 255, 255]);
+        // край u=0 → столбец 0 (красный)
+        assert_eq!(пиксель(&hal, 0, 4), [255, 0, 0, 255]);
+
+        // tiling (2,1): u=0.5625 → 1.125 → fract 0.125 → столбец 0 (красный)
+        let mut hal2 = Hal::new(OutputMode::Silent, 8, 8);
+        hal2.tex.push(tex);
+        hal2.fill_all(0, 0, 0);
+        плоский_свет(&mut hal2);
+        hal2.r3.tiling = [2.0, 1.0];
+        рисуем_квадрат(&mut hal2, 1, 0.5, &uv);
+        assert_eq!(пиксель(&hal2, 4, 4), [255, 0, 0, 255]);
+        // шов стыкуется: u≈0.9375 → 1.875 → fract 0.875 → столбец 3 (белый)
+        assert_eq!(пиксель(&hal2, 7, 4), [255, 255, 255, 255]);
+    }
 }
