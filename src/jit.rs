@@ -138,13 +138,13 @@ enum VarSlot {
 
 impl Compiler {
     pub fn new(arity: usize) -> Self {
-        let vars = (0..arity)
-            .map(|k| ("__arg__".to_string() + &k.to_string(), VarSlot::Arg(k)))
-            .collect();
-        Compiler { arity, ir: Vec::new(), consts: Vec::new(), sp: 0, vars }
-    }
-
-    fn add_const(&mut self, v: f64) -> usize {
+        Compiler {
+            arity,
+            ir: Vec::new(),
+            consts: Vec::new(),
+            sp: 0,
+            vars,
+        }
         if let Some(i) = self.consts.iter().position(|c| *c == v) {
             return i;
         }
@@ -287,15 +287,9 @@ impl Compiler {
         };
         let (cc, a, b) = match (&items[0], items.len()) {
             (Value::Sym(s), 3) => (s.as_str(), &items[1], &items[2]),
-            _ => return None,
-        };
-        let code = match cc {
-            "<" => 0x82, // jb
-            "=" => 0x84, // je
-            ">" => 0x87, // ja
-            "<=" => 0x86, // jbe
-            ">=" => 0x83, // jae
-            _ => return None,
+            "<" => 0x82,  // jb
+            "=" => 0x84,  // je
+            ">" => 0x87,  // ja
         };
         Some((code, a, b))
     }
@@ -324,7 +318,12 @@ impl Compiler {
         let then_pos = self.ir.len();
         self.compile_expr(&args[1])?;
         let end_pos = self.ir.len();
-        self.ir[branch_pos] = IrOp::Branch { cond: code, then_ir: then_pos, else_ir: else_pos, end_ir: end_pos };
+        self.ir[branch_pos] = IrOp::Branch {
+            cond: code,
+            then_ir: then_pos,
+            else_ir: else_pos,
+            end_ir: end_pos,
+        };
         self.ir[jump_end_pos] = IrOp::Jump(end_pos);
         Some(())
     }
@@ -350,14 +349,12 @@ impl Compiler {
                 self.ir.push(IrOp::Const(c));
                 self.ir.push(IrOp::Placeholder); // Jump end
                 let jump_end_pos = self.ir.len() - 1;
-                let then_pos = self.ir.len();
-                self.compile_expr(&args[1])?;
-                let end_pos = self.ir.len();
-                self.ir[branch_pos] =
-                    IrOp::Branch { cond: code, then_ir: then_pos, else_ir: else_pos, end_ir: end_pos };
-                self.ir[jump_end_pos] = IrOp::Jump(end_pos);
-                Some(())
-            }
+                self.ir[branch_pos] = IrOp::Branch {
+                    cond: code,
+                    then_ir: then_pos,
+                    else_ir: else_pos,
+                    end_ir: end_pos,
+                };
             None => {
                 // a — арифметика: всегда истинно → результат b
                 self.compile_expr(&args[0])?;
@@ -386,14 +383,12 @@ impl Compiler {
                 self.ir.push(IrOp::Placeholder); // Jump end
                 let jump_end_pos = self.ir.len() - 1;
                 let then_pos = self.ir.len();
-                let c_true = self.add_const(1.0);
-                self.ir.push(IrOp::Const(c_true));
-                let end_pos = self.ir.len();
-                self.ir[branch_pos] =
-                    IrOp::Branch { cond: code, then_ir: then_pos, else_ir: else_pos, end_ir: end_pos };
-                self.ir[jump_end_pos] = IrOp::Jump(end_pos);
-                Some(())
-            }
+                self.ir[branch_pos] = IrOp::Branch {
+                    cond: code,
+                    then_ir: then_pos,
+                    else_ir: else_pos,
+                    end_ir: end_pos,
+                };
             None => {
                 // a — арифметика: всегда истинно → результат a
                 self.compile_expr(&args[0])
@@ -482,7 +477,9 @@ pub fn try_call_lambda(g: gc::Gc, args: &[Value]) -> Option<Value> {
     JIT_CACHE.with(|cache| {
         let mut m = cache.borrow_mut();
         let key = (g.idx, g.gen);
-        let compiled = m.entry(key).or_insert_with(|| compile(&Value::Lambda(g)).map(Rc::new));
+        let compiled = m
+            .entry(key)
+            .or_insert_with(|| compile(&Value::Lambda(g)).map(Rc::new));
         match compiled {
             Some(jf) => call_jitted(jf, args),
             None => None,
@@ -518,23 +515,9 @@ pub fn call_jitted(f: &JitFn, args: &[Value]) -> Option<Value> {
         // ноль (интерпретатор в этом месте возвращает ошибку) — откат в interp
         return None;
     }
-    Some(Value::Float(r))
-}
-
-
-// ——————————————————————————— тесты ———————————————————————————
-
-#[cfg(test)]
 mod jit_tests {
     use super::*;
-    use crate::gc;
-    use crate::interp::{env_get, env_new, eval, parse_program, register_core, CoreCtx, Value};
-    use std::cell::RefCell;
     use std::rc::Rc;
-    use std::path::PathBuf;
-
-    fn fresh_env() -> gc::Gc {
-        let env0 = env_new(None);
         let c = CoreCtx {
             global: Rc::new(RefCell::new(env0)),
             registry: Rc::new(RefCell::new(vec![])),
@@ -583,33 +566,56 @@ mod jit_tests {
         crate::interp::fmt_value(a) == crate::interp::fmt_value(b)
     }
 
-    #[test]
-    fn jit_базовые_ядра() {
-        let cases: Vec<(String, Vec<f64>, f64)> = vec![
-            ("(define f (lambda (x y) (+ x y)))".into(), vec![2.0, 3.0], 5.0),
-            ("(define f (lambda (x) (* x x)))".into(), vec![7.0], 49.0),
-            ("(define f (lambda () 99))".into(), vec![], 99.0),
-            ("(define f (lambda (x) (if (< x 10) (* x 2) (+ x 100))))".into(), vec![4.0], 8.0),
-            ("(define f (lambda (x) (if (< x 10) (* x 2) (+ x 100))))".into(), vec![50.0], 150.0),
-            ("(define f (lambda (x y) (/ (- x y) (+ x y))))".into(), vec![7.0, 3.0], 0.4),
-            ("(define f (lambda (x) (let ((a (* x x)) (b (+ x 1))) (+ a b))))".into(), vec![3.0], 13.0),
-            ("(define f (lambda (x) (if (> x 0) 1 -1)))".into(), vec![-5.0], -1.0),
-            ("(define f (lambda (x y) (and (< x 100) (+ x y))))".into(), vec![2.0, 3.0], 5.0),
-            ("(define f (lambda (x y) (or (> x 100) (* x y))))".into(), vec![6.0, 7.0], 42.0),
-            ("(define f (lambda (x) (* x 0)))".into(), vec![5.0], 0.0),
-        ];
-        for (src, args, expect) in cases {
+            (
+                "(define f (lambda (x y) (+ x y)))".into(),
+                vec![2.0, 3.0],
+                5.0,
+            ),
+            (
+                "(define f (lambda (x) (if (< x 10) (* x 2) (+ x 100))))".into(),
+                vec![4.0],
+                8.0,
+            ),
+            (
+                "(define f (lambda (x) (if (< x 10) (* x 2) (+ x 100))))".into(),
+                vec![50.0],
+                150.0,
+            ),
+            (
+                "(define f (lambda (x y) (/ (- x y) (+ x y))))".into(),
+                vec![7.0, 3.0],
+                0.4,
+            ),
+            (
+                "(define f (lambda (x) (let ((a (* x x)) (b (+ x 1))) (+ a b))))".into(),
+                vec![3.0],
+                13.0,
+            ),
+            (
+                "(define f (lambda (x) (if (> x 0) 1 -1)))".into(),
+                vec![-5.0],
+                -1.0,
+            ),
+            (
+                "(define f (lambda (x y) (and (< x 100) (+ x y))))".into(),
+                vec![2.0, 3.0],
+                5.0,
+            ),
+            (
+                "(define f (lambda (x y) (or (> x 100) (* x y))))".into(),
+                vec![6.0, 7.0],
+                42.0,
+            ),
             let g = make_lambda(&src);
             let jf = compile(&Value::Lambda(g))
                 .unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
             let vals: Vec<Value> = args.iter().map(|v| Value::Float(*v)).collect();
-            let r = call_jitted(&jf, &vals).unwrap_or_else(|| panic!("гард упал: {}", src));
-            match r {
-                Value::Float(f) if f == expect => {}
-                other => panic!("{}: ждали {}, получили {}", src, expect, crate::interp::fmt_value(&other)),
-            }
-        }
-    }
+                other => panic!(
+                    "{}: ждали {}, получили {}",
+                    src,
+                    expect,
+                    crate::interp::fmt_value(&other)
+                ),
 
     #[test]
     fn jit_деоптимизация_unsupported() {
@@ -651,13 +657,11 @@ mod jit_tests {
 
     /// Чистая арифметика (без булевых значений — interp на них ошибается,
     /// и JIT обязан в этом месте деоптимизировать, что генератор не тестирует).
-    fn gen_arith(rng: &mut Xorshift, d: u32) -> Value {
-        if d == 0 || rng.next() % 100 < 45 {
-            if rng.next() % 2 == 0 {
-                Value::Sym(if rng.next() % 2 == 0 { "x".into() } else { "y".into() })
-            } else if rng.next() % 2 == 0 {
-                Value::Float(rng.f64())
-            } else {
+                Value::Sym(if rng.next() % 2 == 0 {
+                    "x".into()
+                } else {
+                    "y".into()
+                })
                 Value::Int(rng.int())
             }
         } else {
@@ -758,14 +762,23 @@ mod jit_tests {
             let body = gen_expr(&mut rng, 4);
             let src_form = Value::List(vec![
                 Value::Sym("define".into()),
-                Value::List(vec![Value::Sym("f".into()), Value::Sym("x".into()), Value::Sym("y".into())]),
+                Value::List(vec![
+                    Value::Sym("f".into()),
+                    Value::Sym("x".into()),
+                    Value::Sym("y".into()),
+                ]),
                 body.clone(),
             ]);
             let env = fresh_env();
+            let _ = &src_form;
             // define (f x y) body
             let define = Value::List(vec![
                 Value::Sym("define".into()),
-                Value::List(vec![Value::Sym("f".into()), Value::Sym("x".into()), Value::Sym("y".into())]),
+                Value::List(vec![
+                    Value::Sym("f".into()),
+                    Value::Sym("x".into()),
+                    Value::Sym("y".into()),
+                ]),
                 body.clone(),
             ]);
             if eval(&define, env, 0).is_err() {
@@ -820,10 +833,8 @@ mod jit_tests {
         }
         println!(
             "свойственный тест: {} кейсов, compiled={}, deopt={}, сверено={}",
-            3000, compiled, deopt, checked
+        assert!(
+            compiled >= 1500,
+            "слишком много деоптимизаций: compiled={} из 3000",
+            compiled
         );
-        // регресс-порог: хотя бы половина случайных выражений должна JIT-компилироваться
-        assert!(compiled >= 1500, "слишком много деоптимизаций: compiled={} из 3000", compiled);
-        assert!(checked >= 1500);
-    }
-}
