@@ -15,7 +15,7 @@ mod interp;
 mod jit;
 mod json;
 #[cfg(test)]
-mod parser_crosscheck;
+mod parse_diff;
 mod mcp;
 mod png;
 mod render3d;
@@ -260,14 +260,7 @@ fn bench_jit() -> Result<(), String> {
     let l = gc::lambda_clone(g);
     let compiled = crate::jit::compile(&Value::Lambda(g)).is_some();
     println!("ядро: (lambda (x y) (if (< x y) (+ (* x x) (* y 2.0)) (- (* x y) (/ x y))))");
-    println!(
-        "JIT-компиляция: {} (фича jit, x86_64-linux)",
-        if compiled {
-            "успешна"
-        } else {
-            "деоптимизация"
-        }
-    );
+    println!("JIT-компиляция: {} (фича jit, x86_64-linux)", if compiled { "успешна" } else { "деоптимизация" });
 
     let n = 200_000usize;
     let mut acc = 0.0f64;
@@ -309,10 +302,7 @@ fn bench_jit() -> Result<(), String> {
         n,
         dt_jit.as_secs_f64() / n as f64 * 1e9
     );
-    println!(
-        "[jit] ускорение: {:.2}x (критерий этапа: ≥5x); контрольная сумма {:.4}",
-        speedup, acc
-    );
+    println!("[jit] ускорение: {:.2}x (критерий этапа: ≥5x); контрольная сумма {:.4}", speedup, acc);
     Ok(())
 }
 
@@ -336,8 +326,7 @@ fn run_bench_parse() -> Result<(), String> {
         .collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
-        let src = std::fs::read_to_string(e.path())
-            .map_err(|err| format!("{}: {}", e.path().display(), err))?;
+        let src = std::fs::read_to_string(e.path()).map_err(|err| format!("{}: {}", e.path().display(), err))?;
         total_bytes += src.len();
         corpus.push((e.file_name().to_string_lossy().into_owned(), src));
     }
@@ -371,10 +360,7 @@ fn run_bench_parse() -> Result<(), String> {
         lex_simd += interp::lex_only_simd(src);
     }
     if lex_scalar != lex_simd {
-        return Err(format!(
-            "лексический счёт расходится: {} vs {}",
-            lex_scalar, lex_simd
-        ));
+        return Err(format!("лексический счёт расходится: {} vs {}", lex_scalar, lex_simd));
     }
 
     let t2 = Instant::now();
@@ -429,6 +415,7 @@ fn run_bench_parse() -> Result<(), String> {
     let dt_simd = t1.elapsed();
 
     assert_eq!(forms_scalar, forms_simd);
+    let bs = total_bytes as f64 * iters as f64;
     let speedup = dt_scalar.as_secs_f64() / dt_simd.as_secs_f64();
     println!(
         "[парсер] scalar (старый reader):  {:>8.1} мс за {} прогонов корпуса — {:.0} МБ/с",

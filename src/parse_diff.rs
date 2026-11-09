@@ -9,20 +9,24 @@ mod parse_diff {
         let b = parse_program_simd(src);
         match (&a, &b) {
             (Ok(x), Ok(y)) => {
-                    panic!(
-                        "РАСХОЖДЕНИЕ AST:\n  вход: {:?}\n  scalar: {:?}\n  simd:   {:?}",
-                        src, fx, fy
-                    );
-                    panic!(
-                        "РАСХОЖДЕНИЕ ошибок:\n  вход: {:?}\n  scalar: {}\n  simd:   {}",
-                        src, e1, e2
-                    );
-            (r1, r2) => panic!(
-                "РАСХОЖДЕНИЕ Ok/Err:\n  вход: {:?}\n  scalar ok: {}\n  simd ok:   {}",
-                src,
-                r1.is_ok(),
-                r2.is_ok()
-            ),
+                let fx: Vec<String> = x.iter().map(|v| crate::interp::fmt_value(v)).collect();
+                let fy: Vec<String> = y.iter().map(|v| crate::interp::fmt_value(v)).collect();
+                if fx != fy {
+                    panic!("РАСХОЖДЕНИЕ AST:\n  вход: {:?}\n  scalar: {:?}\n  simd:   {:?}", src, fx, fy);
+                }
+            }
+            (Err(e1), Err(e2)) => {
+                if e1 != e2 {
+                    panic!("РАСХОЖДЕНИЕ ошибок:\n  вход: {:?}\n  scalar: {}\n  simd:   {}", src, e1, e2);
+                }
+            }
+                        (r1, r2) => panic!(
+                            "РАСХОЖДЕНИЕ Ok/Err:\n  вход: {:?}\n  scalar ok: {}\n  simd ok:   {}",
+                            src, r1.is_ok(), r2.is_ok()
+                        ),
+        }
+    }
+
     #[test]
     fn сверка_парсера_на_каверзных_входах() {
         let cases = [
@@ -91,21 +95,22 @@ mod parse_diff {
                                 panic!("{}: {} vs {} форм", p.display(), x.len(), y.len());
                             }
                             for (i, (vx, vy)) in x.iter().zip(y.iter()).enumerate() {
-                                    panic!(
-                                        "{}: форма {}:\n  scalar: {}\n  simd:   {}",
-                                        p.display(),
-                                        i + 1,
-                                        fx,
-                                        fy
-                                    );
+                                let fx = crate::interp::fmt_value(vx);
+                                let fy = crate::interp::fmt_value(vy);
+                                if fx != fy {
+                                    panic!("{}: форма {}:\n  scalar: {}\n  simd:   {}", p.display(), i + 1, fx, fy);
+                                }
+                            }
+                        }
                         (Err(e1), Err(e2)) => {
                             if e1 != e2 {
-                        (r1, r2) => panic!(
-                            "{}: Ok/Err расходится: scalar_ok={} simd_ok={}",
-                            p.display(),
-                            r1.is_ok(),
-                            r2.is_ok()
-                        ),
+                                panic!("{}: ошибка scalar={} simd={}", p.display(), e1, e2);
+                            }
+                        }
+                        (r1, r2) => panic!("{}: Ok/Err расходится: scalar_ok={} simd_ok={}", p.display(), r1.is_ok(), r2.is_ok()),
+                    }
+                    count += 1;
+                }
             }
         }
         assert!(count >= 10, "корпус не найден: {} файлов", count);

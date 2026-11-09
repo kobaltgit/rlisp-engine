@@ -41,12 +41,13 @@ struct Emitter {
     /// текущая глубина f64-стека (для LoadSlot)
     sp: usize,
 }
-        Emitter {
-            code: Vec::new(),
-            fixups: Vec::new(),
-            labels: Vec::new(),
-            sp: 0,
-        }
+
+impl Emitter {
+    fn new() -> Self {
+        Emitter { code: Vec::new(), fixups: Vec::new(), labels: Vec::new(), sp: 0 }
+    }
+
+    fn emit(&mut self, b: &[u8]) -> usize {
         let off = self.code.len();
         self.code.extend_from_slice(b);
         off
@@ -248,12 +249,13 @@ struct Emitter {
         }
         let addr = alloc_code(total)?;
         unsafe {
-        Some(JitFn {
-            code: addr,
-            len: total,
-            arity,
-            consts: consts.to_vec(),
-        })
+            std::ptr::copy_nonoverlapping(self.code.as_ptr(), addr as *mut u8, total);
+        }
+        make_exec(addr, total)?;
+        Some(JitFn { code: addr, len: total, arity, consts: consts.to_vec() })
+    }
+}
+
 /// Главная функция эмиссии: IR + константы → исполняемый код.
 /// В пул добавляется NaN-константа — сигнал runtime-деоптимизации
 /// (деление на ноль: интерпретатор в этом месте возвращает ошибку).
@@ -277,12 +279,13 @@ pub fn emit(ir: &[IrOp], consts: &[f64], arity: usize) -> Option<JitFn> {
             }
             IrOp::AdjustStack(k) => e.op_adjust(*k),
             IrOp::BinAdd | IrOp::BinSub | IrOp::BinMul | IrOp::BinDiv => {
-            IrOp::Branch {
-                cond,
-                then_ir,
-                else_ir,
-                end_ir: _,
-            } => {
+                e.op_bin(op, nan_idx, end_ir)
+            }
+            IrOp::CmpLt | IrOp::CmpEq | IrOp::CmpGt | IrOp::CmpLe | IrOp::CmpGe => e.op_cmp(op),
+            IrOp::Branch { cond, then_ir, else_ir, end_ir: _ } => {
+                e.op_branch(*cond, *then_ir, *else_ir);
+            }
+            IrOp::Jump(t) => e.op_jump(*t),
             IrOp::Placeholder => return None, // не должен дожить до эмиссии
         }
     }
