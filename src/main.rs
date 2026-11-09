@@ -11,7 +11,11 @@ mod gc;
 mod gpu;
 mod hal;
 mod interp;
+#[cfg(feature = "jit")]
+mod jit;
 mod json;
+#[cfg(test)]
+mod parse_diff;
 mod mcp;
 mod png;
 mod render3d;
@@ -43,6 +47,7 @@ struct Args {
     stdin_keys: bool,
     fast: bool,
     bench: bool,
+    bench_parse: bool,
     eval_code: Option<String>,
     serve: bool,
     port: u16,
@@ -65,6 +70,7 @@ impl Default for Args {
             stdin_keys: false,
             fast: false,
             bench: false,
+            bench_parse: false,
             eval_code: None,
             serve: false,
             port: 7300,
@@ -97,6 +103,9 @@ rlisp-engine — игровой движок как Lisp-машина (Rust = т
   --fast          без привязки к реальному времени
   --width W --height H   стартовый размер экрана
   --bench         бенчмарк SIMD-слоя + 2D-кадра (Rust HAL vs Lisp-уровень)
+  --bench-parse   бенчмарк токенизатора/парсера: старый посимвольный reader vs
+                  новый SIMD-сканер (src/simd.rs) на реальном корпусе
+                  assets/lisp/*.lisp; оба пути обязаны давать одинаковые AST
   --wgpu          GPU-бэкенд за фасадом HAL (фича `wgpu`): offscreen-рендер +
                   readback в фреймбуфер; без адаптера — откат на программный
                   растр с предупреждением (все скрипты работают как раньше)
@@ -157,6 +166,7 @@ fn parse_args() -> Result<Args, String> {
             "--stdin-keys" => args.stdin_keys = true,
             "--fast" => args.fast = true,
             "--bench" => args.bench = true,
+            "--bench-parse" => args.bench_parse = true,
             "--wgpu" => args.wgpu = true,
             "--eval" => args.eval_code = Some(it.next().ok_or("--eval: нужно выражение")?),
             "--serve" => args.serve = true,
@@ -221,6 +231,208 @@ fn run_eval(code: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "jit")]
+fn bench_jit() -> Result<(), String> {
+    // Этап 3: бенч JIT числовых ядер. Сцена помечена честно:
+    // «interp» — ПОЛНЫЙ путь интерпретатора (apply_lambda: bind_params +
+    // eval каждого узла); «JIT» — apply() с хуком JIT (гард арности/типов +
+    // нативный вызов скомпилированного x86-64 ядра). Это НЕ «вся игра стала
+    // в 5 раз быстрее» — ускоряется вызов числовой лямбды на горячем пути.
+    use std::time::Instant;
+
+    println!("== rlisp-engine :: бенч JIT числовых ядер (Этап 3) ==");
+    let halrc = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 4, 4)));
+    let (ctx, cell) = make_context(halrc, PathBuf::from("assets/lisp"));
+    load_file(&PathBuf::from("assets/lisp/core.lisp"), &ctx)?;
+    let env = *cell.borrow();
+
+    // ядро как в игровых update-функциях: арифметика + сравнение + if + деление
+    let kernel = "(define (kern x y) \
+        (if (< x y) \
+            (+ (* x x) (* y 2.0)) \
+            (- (* x y) (/ x y))))";
+    let prog = parse_program(kernel)?;
+    interp::eval(&prog[0], env, 0)?;
+    let g = match interp::env_get(env, "kern") {
+        Some(Value::Lambda(g)) => g,
+        _ => return Err("бенч JIT: kern не лямбда".into()),
+    };
+    let l = gc::lambda_clone(g);
+    let compiled = crate::jit::compile(&Value::Lambda(g)).is_some();
+    println!("ядро: (lambda (x y) (if (< x y) (+ (* x x) (* y 2.0)) (- (* x y) (/ x y))))");
+    println!("JIT-компиляция: {} (фича jit, x86_64-linux)", if compiled { "успешна" } else { "деоптимизация" });
+
+    let n = 200_000usize;
+    let mut acc = 0.0f64;
+
+    // прогрев + интерпретатор
+    let t0 = Instant::now();
+    for i in 0..n {
+        let x = Value::Float((i % 100) as f64 / 10.0);
+        let y = Value::Float(((i * 7) % 100) as f64 / 10.0 - 5.0 + 0.05); // не 0: деление на ноль в interp — ошибка
+        let r = interp::apply_lambda(&l, &[x, y], 0)?;
+        if let Value::Float(f) = r {
+            acc += f;
+        }
+    }
+    let dt_interp = t0.elapsed();
+
+    // путь с JIT (apply использует хук try_call_lambda)
+    let t1 = Instant::now();
+    for i in 0..n {
+        let x = Value::Float((i % 100) as f64 / 10.0);
+        let y = Value::Float(((i * 7) % 100) as f64 / 10.0 - 5.0 + 0.05); // не 0: деление на ноль в interp — ошибка
+        let r = interp::apply(&Value::Lambda(g), &[x, y], 0)?;
+        if let Value::Float(f) = r {
+            acc += f;
+        }
+    }
+    let dt_jit = t1.elapsed();
+
+    let speedup = dt_interp.as_secs_f64() / dt_jit.as_secs_f64();
+    println!(
+        "[jit] interp (apply_lambda): {:>8.1} мс за {} вызовов — {:>6.1} нс/вызов",
+        dt_interp.as_secs_f64() * 1e3,
+        n,
+        dt_interp.as_secs_f64() / n as f64 * 1e9
+    );
+    println!(
+        "[jit] JIT (apply, гард+натив): {:>8.1} мс за {} вызовов — {:>6.1} нс/вызов",
+        dt_jit.as_secs_f64() * 1e3,
+        n,
+        dt_jit.as_secs_f64() / n as f64 * 1e9
+    );
+    println!("[jit] ускорение: {:.2}x (критерий этапа: ≥5x); контрольная сумма {:.4}", speedup, acc);
+    Ok(())
+}
+
+fn run_bench_parse() -> Result<(), String> {
+    // Этап 3: честное сравнение старого посимвольного reader'а
+    // (parse_program_scalar, v0.1–v0.3) и нового SIMD-токенизатора
+    // (parse_program → parse_program_simd, src/simd.rs: byte-class скан SSE2)
+    // на реальном корпусе assets/lisp/*.lisp. Оба пути дают одинаковые AST —
+    // сверка до замера; расхождение = ошибка, бенчмарк не продолжается.
+    use std::time::Instant;
+
+    println!("== rlisp-engine :: бенчмарк токенизатора/парсера (Этап 3) ==");
+    println!("уровень SIMD: {}", simd::level_name(simd::detect()));
+
+    let mut corpus: Vec<(String, String)> = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut entries: Vec<_> = std::fs::read_dir("assets/lisp")
+        .map_err(|e| format!("assets/lisp: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("lisp"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let src = std::fs::read_to_string(e.path()).map_err(|err| format!("{}: {}", e.path().display(), err))?;
+        total_bytes += src.len();
+        corpus.push((e.file_name().to_string_lossy().into_owned(), src));
+    }
+    println!(
+        "корпус: {} файлов, {} байт (реальные исходы движка, включая русские комментарии)",
+        corpus.len(),
+        total_bytes
+    );
+
+    // взаимная сверка AST (обязательна ДО замера)
+    for (name, src) in &corpus {
+        let a = interp::parse_program_scalar(src)?;
+        let b = interp::parse_program(src)?;
+        let fa: Vec<String> = a.iter().map(interp::fmt_value).collect();
+        let fb: Vec<String> = b.iter().map(interp::fmt_value).collect();
+        if fa != fb {
+            return Err(format!("{}: AST старого и SIMD-пути расходятся!", name));
+        }
+    }
+    println!("сверка AST scalar-vs-simd: OK ({} файлов)", corpus.len());
+
+    // отдельный замер ТОЛЬКО лексического скана (без построения Value) —
+    // показывает вклад самой векторизации, честно помечен
+    let iters = 200usize;
+    let bs = total_bytes as f64 * iters as f64;
+    let mbs = |d: std::time::Duration| bs / d.as_secs_f64() / 1e6;
+    let mut lex_scalar = 0usize;
+    let mut lex_simd = 0usize;
+    for (_, src) in &corpus {
+        lex_scalar += interp::lex_only_scalar(src);
+        lex_simd += interp::lex_only_simd(src);
+    }
+    if lex_scalar != lex_simd {
+        return Err(format!("лексический счёт расходится: {} vs {}", lex_scalar, lex_simd));
+    }
+
+    let t2 = Instant::now();
+    for _ in 0..iters {
+        for (_, src) in &corpus {
+            let _ = interp::lex_only_scalar(src);
+        }
+    }
+    let dt_lex_scalar = t2.elapsed();
+    let t3 = Instant::now();
+    for _ in 0..iters {
+        for (_, src) in &corpus {
+            let _ = interp::lex_only_simd(src);
+        }
+    }
+    let dt_lex_simd = t3.elapsed();
+    let lex_speedup = dt_lex_scalar.as_secs_f64() / dt_lex_simd.as_secs_f64();
+    println!(
+        "[скан]   scalar (посимвольно, без Value): {:>8.1} мс — {:.0} МБ/с",
+        dt_lex_scalar.as_secs_f64() * 1e3,
+        mbs(dt_lex_scalar)
+    );
+    println!(
+        "[скан]   SIMD (byte-class, без Value):    {:>8.1} мс — {:.0} МБ/с",
+        dt_lex_simd.as_secs_f64() * 1e3,
+        mbs(dt_lex_simd)
+    );
+    println!("[скан]   ускорение лексера: {:.2}x", lex_speedup);
+
+    // прогрев (page cache, аллокаторы)
+    for (_, src) in &corpus {
+        let _ = interp::parse_program_scalar(src);
+        let _ = interp::parse_program(src);
+    }
+
+    let t0 = Instant::now();
+    let mut forms_scalar = 0usize;
+    for _ in 0..iters {
+        for (_, src) in &corpus {
+            forms_scalar += interp::parse_program_scalar(src)?.len();
+        }
+    }
+    let dt_scalar = t0.elapsed();
+
+    let t1 = Instant::now();
+    let mut forms_simd = 0usize;
+    for _ in 0..iters {
+        for (_, src) in &corpus {
+            forms_simd += interp::parse_program(src)?.len();
+        }
+    }
+    let dt_simd = t1.elapsed();
+
+    assert_eq!(forms_scalar, forms_simd);
+    let bs = total_bytes as f64 * iters as f64;
+    let speedup = dt_scalar.as_secs_f64() / dt_simd.as_secs_f64();
+    println!(
+        "[парсер] scalar (старый reader):  {:>8.1} мс за {} прогонов корпуса — {:.0} МБ/с",
+        dt_scalar.as_secs_f64() * 1e3,
+        iters,
+        mbs(dt_scalar)
+    );
+    println!(
+        "[парсер] SIMD (byte-class скан):  {:>8.1} мс за {} прогонов корпуса — {:.0} МБ/с",
+        dt_simd.as_secs_f64() * 1e3,
+        iters,
+        mbs(dt_simd)
+    );
+    println!("[парсер] ускорение: {:.2}x (критерий этапа: ≥3x)", speedup);
+    Ok(())
+}
+
 fn run_bench(args: &Args) -> Result<(), String> {
     println!("== rlisp-engine :: бенчмарк SIMD-слоя (критерий ТЗ §4.5) ==");
     println!("обнаружен уровень: {}", simd::level_name(simd::detect()));
@@ -278,6 +490,12 @@ fn run_bench(args: &Args) -> Result<(), String> {
         per_scalar / per_batch
     );
 
+    #[cfg(feature = "jit")]
+    {
+        if let Err(e) = bench_jit() {
+            eprintln!("[ошибка бенча JIT] {}", e);
+        }
+    }
     bench_2d(args)
 }
 
@@ -910,6 +1128,13 @@ fn main() {
     }
     if args.bench {
         if let Err(e) = run_bench(&args) {
+            eprintln!("[ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.bench_parse {
+        if let Err(e) = run_bench_parse() {
             eprintln!("[ошибка] {}", e);
             std::process::exit(1);
         }
