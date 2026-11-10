@@ -35,8 +35,8 @@
 
 (define (draw)
   (let* ((t (time-now))
-         (eye (list 2.6 1.35 2.6))
-         (mvp (camera-mvp eye (list 0 0.6 0) 0.95)))
+         (eye (list 0 0.75 -2.2))
+         (mvp (camera-mvp eye (list 0 0.5 0) 0.95)))
     (gpu3d-clear 0.72 0.82 0.90)
     (gpu3d-view 2.6 1.35 2.6)
     (gpu3d-light 0.4 0.75 0.35 0.50 0.75 0.55 44)
