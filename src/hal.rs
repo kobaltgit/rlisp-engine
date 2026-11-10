@@ -34,6 +34,47 @@ pub enum OutputMode {
     Png { dir: PathBuf, every: usize },
 }
 
+/// Монотонные часы: native — Instant; wasm — wall-ms от JS через rl_frame
+/// (std Instant на wasm32-unknown-unknown паникует в рантайме).
+pub struct MonoClock {
+    #[cfg(not(target_arch = "wasm32"))]
+    t0: std::time::Instant,
+    #[cfg(target_arch = "wasm32")]
+    t0: f64,
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static JS_NOW: std::cell::RefCell<f64> = std::cell::RefCell::new(0.0);
+}
+
+/// wasm-фасад: обновить опорное время (performance.now() из JS)
+#[cfg(target_arch = "wasm32")]
+pub fn set_js_now(ms: f64) {
+    JS_NOW.with(|c| *c.borrow_mut() = ms);
+}
+
+impl MonoClock {
+    pub fn now() -> MonoClock {
+        MonoClock {
+            #[cfg(not(target_arch = "wasm32"))]
+            t0: std::time::Instant::now(),
+            #[cfg(target_arch = "wasm32")]
+            t0: JS_NOW.with(|c| *c.borrow()),
+        }
+    }
+    pub fn elapsed_secs(&self) -> f64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.t0.elapsed().as_secs_f64()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            (JS_NOW.with(|c| *c.borrow()) - self.t0) / 1000.0
+        }
+    }
+}
+
 pub struct Hal {
     pub w: usize,
     pub h: usize,
@@ -42,7 +83,7 @@ pub struct Hal {
     pub title: String,
     pub out: OutputMode,
     pub queue: Vec<Value>,
-    pub start: std::time::Instant,
+    pub start: MonoClock,
     pub mem: HashMap<u64, Rc<RefCell<Vec<u8>>>>,
     pub next_mem: u64,
     /// «GPU» фиксированного конвейера: z-буфер + свет + статистика (render3d.rs)
@@ -74,7 +115,7 @@ impl Hal {
             title: String::new(),
             out,
             queue: Vec::new(),
-            start: std::time::Instant::now(),
+            start: MonoClock::now(),
             mem: HashMap::new(),
             next_mem: 1,
             r3: crate::render3d::R3::new(),
@@ -599,7 +640,7 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     // — время (по ТЗ §3.6) —
     let h = hal.clone();
     def(env, "time-now", move |_: &[Value]| {
-        Ok(Value::Float(h.borrow().start.elapsed().as_secs_f64()))
+        Ok(Value::Float(h.borrow().start.elapsed_secs()))
     });
     def(env, "time-sleep", move |args| {
         need(args, 1)?;
