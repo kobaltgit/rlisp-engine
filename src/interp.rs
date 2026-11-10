@@ -1622,6 +1622,22 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
                 || matches!(&args[0], Value::Cons(_)),
         ))
     });
+    def(env, "number?", |args| {
+        need(args, 1)?;
+        Ok(Value::Bool(matches!(&args[0], Value::Int(_) | Value::Float(_))))
+    });
+    def(env, "symbol?", |args| {
+        need(args, 1)?;
+        Ok(Value::Bool(matches!(&args[0], Value::Sym(_))))
+    });
+    def(env, "string?", |args| {
+        need(args, 1)?;
+        Ok(Value::Bool(matches!(&args[0], Value::Str(_))))
+    });
+    def(env, "boolean?", |args| {
+        need(args, 1)?;
+        Ok(Value::Bool(matches!(&args[0], Value::Bool(_))))
+    });
     def(env, "gc", |_: &[Value]| {
         // сборка происходит на границе форм (стек eval пуст) — сразу после
         // текущей формы; результат виден в (gc-stats) следующей формы

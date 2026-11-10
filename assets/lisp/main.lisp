@@ -9,6 +9,7 @@
 (load "physics.lisp")    ;; системный DSL: AABB + SIMD-интегрирование
 (load "textures.lisp")   ;; системный DSL v0.3: текстуры, спрайты
 (load "editor.lisp")     ;; системный DSL v0.3: мост редактора и MCP
+(load "audio.lisp")      ;; системный DSL v0.3: аудиосистема, SFX пресеты, микшер
 (load "game.lisp")       ;; уровень 4: сама игра
 
 (print "rlisp-engine: HAL → интерпретатор → системные DSL → игра; всё готово, update/draw на Lisp")

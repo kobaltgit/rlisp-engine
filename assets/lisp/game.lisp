@@ -24,6 +24,11 @@
 (defpersistent *wave-timer* 0.0)
 (defpersistent *fire-timer* 0.0)
 
+;; ——— аудиоэффекты 2D-игры ———
+(audio-preset-laser 'laser 960.0)
+(audio-preset-explosion 'explosion)
+(audio-preset-hit 'hit)
+
 ;; ——— типы врагов: данные + макрос, новый враг — 3 строки Lisp (критерий G6) ———
 (define *enemy-types* (make-table))
 (defmacro defenemy (name . kvs)
@@ -121,7 +126,8 @@
               (table-set! b 'y py)
               (table-set! b 'vx (* (car d) 260.0))
               (table-set! b 'vy (* (cadr d) 260.0))
-              (set! *bullets* (cons b *bullets*)))
+              (set! *bullets* (cons b *bullets*))
+              (play-sfx 'laser 0.5 1.1))
             #f))))
 
 (define (update-fire dt)
@@ -158,8 +164,11 @@
                       (begin (entity-remove! id)
                              (set! *score* (+ *score* (enemy-score (table-get e 'kind 'grunt))))
                              (set! *kills* (+ *kills* 1))
+                             (play-sfx 'explosion 0.8 1.0)
                              (table-set! b 'dead #t))
-                      (entity-set! id 'hp hp)))
+                      (begin
+                        (entity-set! id 'hp hp)
+                        (play-sfx 'hit 0.5 1.2))))
                 #f)))
         entries))
      *bullets*)
@@ -206,7 +215,9 @@
                     (aabb-collide? (table-get *player* 'x 0.0) (table-get *player* 'y 0.0) 12 12
                                    (table-get e 'x 0.0) (table-get e 'y 0.0)
                                    (table-get e 'w 10) (table-get e 'h 10)))
-               (set! *game-over* #t)
+               (begin
+                 (set! *game-over* #t)
+                 (play-sfx 'explosion 1.0 0.6))
                #f)))
         #t)))
 
@@ -218,6 +229,7 @@
   (table-set! *player* 'x (/ *screen-w* 2))
   (table-set! *player* 'y (/ *screen-h* 2))
   (set! *spawn-timer* 1.0) (set! *wave-timer* 0.0) (set! *fire-timer* 0.0)
+  (play-sfx 'laser 0.7 1.4)
   (print "reset-game: новый забег"))
 
 (define (check-restart)

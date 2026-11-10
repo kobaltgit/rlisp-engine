@@ -25,6 +25,12 @@
 (defpersistent *fire-timer* 0.0)
 (defpersistent *next-id* 0)
 
+;; ——— аудиоэффекты ORBITAL ———
+(audio-preset-laser 'laser 880.0)
+(audio-preset-explosion 'explosion)
+(audio-preset-hit 'hit)
+(audio-preset-engine 'engine)
+
 ;; игрок появляется один раз; при перезагрузке состояние восстанавливается
 (if (table-has? *player* 'x) #f
     (begin (table-set! *player* 'x 0.0)
@@ -133,7 +139,8 @@
               (table-set! b 'vx (* (car d) *bullet-speed*))
               (table-set! b 'vz (* (cadr d) *bullet-speed*))
               (table-set! b 'life *bullet-life*)
-              (set! *bullets* (cons b *bullets*)))
+              (set! *bullets* (cons b *bullets*))
+              (play-sfx 'laser 0.5 1.0))
             #f))))
 
 (define (update-fire dt)
@@ -166,12 +173,15 @@
                              (set! *score* (+ *score*
                                               (if (eq? (table-get e 'kind 'grunt) 'grunt) 10 30)))
                              (set! *kills* (+ *kills* 1))
+                             (play-sfx 'explosion 0.8 1.0)
                              (let ((fx (make-table)))
                                (table-set! fx 'x (table-get e 'x 0.0))
                                (table-set! fx 'z (table-get e 'z 0.0))
                                (table-set! fx 't 0.0)
                                (set! *fx* (cons fx *fx*))))
-                      (table-set! e 'hp hp)))
+                      (begin
+                        (table-set! e 'hp hp)
+                        (play-sfx 'hit 0.5 1.2))))
                 #f)))
         entries))
      *bullets*))
@@ -240,7 +250,9 @@
              (if (and (not *game-over*)
                       (< (dist2d (px 0) (table-get *player* 'z 0.0)
                                  (table-get e 'x 0.0) (table-get e 'z 0.0)) 2.4))
-                 (set! *game-over* #t)
+                 (begin
+                   (set! *game-over* #t)
+                   (play-sfx 'explosion 1.0 0.6))
                  #f)))
          (table-entries *enemies*))
         #t)))
@@ -253,6 +265,7 @@
   (table-set! *player* 'x 0.0)
   (table-set! *player* 'z 0.0)
   (set! *spawn-timer* 1.2) (set! *wave-timer* 0.0) (set! *fire-timer* 0.0)
+  (play-sfx 'laser 0.7 1.4)
   (print "reset-game: новый забег в ORBITAL"))
 
 (define (check-restart)
