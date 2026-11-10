@@ -225,6 +225,20 @@
         <button id="b-scale-2x" class="vbtn" title="Увеличенный размер 640x480">2x</button>
         <button id="b-scale-fit" class="vbtn on" title="Заполнить всё доступное окно с сохранением 4:3">Fit</button>
       </div>
+      <div class="vbar-group" title="Режим фильтрации текстур: Nearest (ретро-пиксели) или Bilinear (сглаживание)">
+        <button id="b-filter-nearest" class="vbtn on">Nearest</button>
+        <button id="b-filter-bilinear" class="vbtn">Bilinear</button>
+      </div>
+      <div class="vbar-group">
+        <button id="b-mipmaps" class="vbtn" title="Пирамида мипмапов: устраняет мерцание текстур на горизонте">Mipmaps: Выкл</button>
+      </div>
+      <div class="vbar-group" title="Затенение нормалей: Flat (ретро-грани) или Smooth (сглаженный Блинн-Фонг)">
+        <button id="b-shading-flat" class="vbtn on">Flat</button>
+        <button id="b-shading-smooth" class="vbtn">Smooth</button>
+      </div>
+      <div class="vbar-group">
+        <button id="b-shadows" class="vbtn" title="Динамические тени (Shadow Mapping PCF 2x2)">☀️ Тени: Выкл</button>
+      </div>
       <span class="spacer"></span>
       <span id="vbar-focus-hint" class="vbar-hint">Кликните в экран для управления WASD / R</span>
       <button id="b-expand-view" class="vbtn" title="Развернуть/свернуть экран (F)">⛶ Развернуть</button>
@@ -512,7 +526,49 @@ function drawGizmo() {
   const ctx = cvs.getContext("2d");
   ctx.clearRect(0, 0, box.cw, box.ch);
   handles = null;
-  if (!gizmoOn || !selected || !mvp) return;
+  if (!gizmoOn || !mvp) return;
+
+  // Отрисовка маркеров источников света (Point Lights) в сцене
+  for (const en of (scene || [])) {
+    if (en.type === "light") {
+      const lp = worldToScreen(entPos(en));
+      if (!lp) continue;
+      const isSel = (selected && entKey(selected) === entKey(en));
+      ctx.save();
+      // Ореол
+      const glow = ctx.createRadialGradient(lp.x, lp.y, 2, lp.x, lp.y, 16);
+      glow.addColorStop(0, isSel ? "rgba(255, 255, 220, 0.95)" : "rgba(255, 230, 80, 0.85)");
+      glow.addColorStop(0.4, isSel ? "rgba(255, 200, 50, 0.5)" : "rgba(255, 170, 20, 0.35)");
+      glow.addColorStop(1, "rgba(255, 120, 0, 0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(lp.x, lp.y, 16, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ядро лампочки
+      ctx.fillStyle = isSel ? "#ffffff" : "#ffe855";
+      ctx.strokeStyle = isSel ? "#ffaa00" : "#d35400";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(lp.x, lp.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Лучи
+      ctx.strokeStyle = isSel ? "#ffffff" : "rgba(255, 215, 0, 0.85)";
+      ctx.lineWidth = 1.2;
+      for (let a = 0; a < 8; a++) {
+        const ang = a * (Math.PI / 4);
+        ctx.beginPath();
+        ctx.moveTo(lp.x + Math.cos(ang) * 7, lp.y + Math.sin(ang) * 7);
+        ctx.lineTo(lp.x + Math.cos(ang) * 11, lp.y + Math.sin(ang) * 11);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  if (!selected) return;
   const pos = entPos(selected);
   const c0 = worldToScreen(pos);
   if (!c0) return;
@@ -794,7 +850,15 @@ function renderInsp() {
     return;
   }
   const skip = new Set(["id", "type", "ref", "name", "__i"]);
-  let html = "<div class='name'>" + escapeHtml(selected.name || selected.type) + " #" + selected.id + "</div>";
+  let html = "<div class='name'>" + (selected.type === "light" ? "💡 " : "") + escapeHtml(selected.name || selected.type) + " #" + selected.id + "</div>";
+  if (selected.type === "light" && selected.r !== undefined) {
+    const cr = Math.min(255, Math.max(0, Math.round((selected.r || 1) * 255)));
+    const cg = Math.min(255, Math.max(0, Math.round((selected.g || 1) * 255)));
+    const cb = Math.min(255, Math.max(0, Math.round((selected.b || 1) * 255)));
+    html += "<div style='display:flex;align-items:center;gap:8px;padding:4px 0 8px;font-size:11px;color:var(--dim)'>" +
+            "<span style='display:inline-block;width:14px;height:14px;border-radius:50%;background:rgb(" + cr + "," + cg + "," + cb + ");box-shadow:0 0 6px rgb(" + cr + "," + cg + "," + cb + ")'></span>" +
+            "Цвет излучения</div>";
+  }
   html += "<div class='hint' style='padding:0 0 6px'>ref: <code>" + escapeHtml(selected.ref || "?") + "</code></div>";
   for (const k of Object.keys(selected)) {
     if (skip.has(k)) continue;
@@ -805,7 +869,7 @@ function renderInsp() {
     }
   }
   html += "<button class='apply primary' onclick='applyInsp()'>Применить</button>";
-  html += (selected.type === "enemy" || selected.type === "pylon")
+  html += (selected.type === "enemy" || selected.type === "pylon" || selected.type === "light")
         ? "<button class='apply del' onclick='removeSel()'>Удалить</button>" : "";
   box.innerHTML = html;
 }
@@ -824,7 +888,7 @@ function applyInsp() {
   if (sets.length) evalLisp("(begin " + sets.join(" ") + ")");
 }
 function removeSel() {
-  if (selected && (selected.type === "enemy" || selected.type === "pylon") && selected.id != null) {
+  if (selected && (selected.type === "enemy" || selected.type === "pylon" || selected.type === "light") && selected.id != null) {
     evalLisp("(mcp-remove " + selected.id + ")");
     logLine("удалена сущность #" + selected.id, "sys");
   }
@@ -942,6 +1006,92 @@ $("b-scale-2x").onclick = () => applyViewportScale("2x");
 $("b-scale-fit").onclick = () => applyViewportScale("fit");
 $("b-expand-view").onclick = toggleExpandView;
 window.addEventListener("resize", () => applyViewportScale());
+
+/* ─── переключение фильтрации текстур, мипмапов, шейдинга и теней ─── */
+let currentFilter = "nearest";
+let currentMipmaps = false;
+let currentShading = "flat";
+let currentShadows = false;
+
+function applyGpu3dState(str) {
+  if (!str || typeof str !== "string" || !str.includes(":backend")) return;
+  const mFilter = str.match(/:filter\s+"([^"]+)"/);
+  if (mFilter) {
+    currentFilter = mFilter[1];
+    if ($("b-filter-nearest")) $("b-filter-nearest").classList.toggle("on", currentFilter === "nearest");
+    if ($("b-filter-bilinear")) $("b-filter-bilinear").classList.toggle("on", currentFilter === "bilinear");
+  }
+  const mMip = str.match(/:mipmaps\s+(#[tf])/);
+  if (mMip) {
+    currentMipmaps = (mMip[1] === "#t");
+    if ($("b-mipmaps")) {
+      $("b-mipmaps").classList.toggle("on", currentMipmaps);
+      $("b-mipmaps").textContent = currentMipmaps ? "Mipmaps: Вкл" : "Mipmaps: Выкл";
+    }
+  }
+  const mShade = str.match(/:shading\s+"([^"]+)"/);
+  if (mShade) {
+    currentShading = mShade[1];
+    if ($("b-shading-flat")) $("b-shading-flat").classList.toggle("on", currentShading === "flat");
+    if ($("b-shading-smooth")) $("b-shading-smooth").classList.toggle("on", currentShading === "smooth");
+  }
+  const mShadow = str.match(/:shadow_map\s+(#[tf])/);
+  if (mShadow) {
+    currentShadows = (mShadow[1] === "#t");
+    if ($("b-shadows")) {
+      $("b-shadows").classList.toggle("on", currentShadows);
+      $("b-shadows").textContent = currentShadows ? "☀️ Тени: Вкл" : "☀️ Тени: Выкл";
+    }
+  }
+}
+
+$("b-filter-nearest").onclick = () => {
+  currentFilter = "nearest";
+  $("b-filter-nearest").classList.add("on");
+  $("b-filter-bilinear").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-filter 'nearest)"});
+  toast("Текстуры: Nearest (пиксельный ретро-стиль)");
+};
+
+$("b-filter-bilinear").onclick = () => {
+  currentFilter = "bilinear";
+  $("b-filter-bilinear").classList.add("on");
+  $("b-filter-nearest").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-filter 'bilinear)"});
+  toast("Текстуры: Bilinear (сглаживание N64/3dfx)");
+};
+
+$("b-mipmaps").onclick = () => {
+  currentMipmaps = !currentMipmaps;
+  $("b-mipmaps").classList.toggle("on", currentMipmaps);
+  $("b-mipmaps").textContent = currentMipmaps ? "Mipmaps: Вкл" : "Mipmaps: Выкл";
+  api("/api/eval", {code: currentMipmaps ? "(gpu3d-mipmaps #t)" : "(gpu3d-mipmaps #f)"});
+  toast(currentMipmaps ? "Mipmaps: Вкл (антиалиасинг на горизонте)" : "Mipmaps: Выкл");
+};
+
+$("b-shading-flat").onclick = () => {
+  currentShading = "flat";
+  $("b-shading-flat").classList.add("on");
+  $("b-shading-smooth").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-shading 'flat)"});
+  toast("Затенение: Flat (ретро-грани)");
+};
+
+$("b-shading-smooth").onclick = () => {
+  currentShading = "smooth";
+  $("b-shading-smooth").classList.add("on");
+  $("b-shading-flat").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-shading 'smooth)"});
+  toast("Затенение: Smooth (сглаженный Блинн-Фонг)");
+};
+
+$("b-shadows").onclick = () => {
+  currentShadows = !currentShadows;
+  $("b-shadows").classList.toggle("on", currentShadows);
+  $("b-shadows").textContent = currentShadows ? "☀️ Тени: Вкл" : "☀️ Тени: Выкл";
+  api("/api/eval", {code: currentShadows ? "(gpu3d-shadow-enable #t)" : "(gpu3d-shadow-enable #f)"});
+  toast(currentShadows ? "Тени: Вкл (динамическая карта теней)" : "Тени: Выкл");
+};
 
 /* ───────────────────────── фокус и управление клавишами ───────────────────────── */
 let gameFocused = false;
@@ -1420,6 +1570,9 @@ async function poll() {
       if (l[0] > lastLogSeq) { lastLogSeq = l[0]; logLine(l[1], "sys"); }
     }
     for (const r of st.results || []) {
+      if (r.result && r.result.includes(":backend")) {
+        applyGpu3dState(r.result);
+      }
       logLine("#" + r.id + " → " + r.result, r.result.startsWith("ОШИБКА") ? "bad" : "res");
       if (r.id > lastResult) lastResult = r.id;
       if (pendingToasts[r.id]) {
@@ -1467,6 +1620,7 @@ applyViewportScale();
 streamFrame();
 setInterval(poll, 250);
 poll();
+api("/api/eval", {code: "(gpu3d-state)"});
 logLine("редактор подключён. Всё живое: правь код — мир меняется без перезапуска.", "sys");
 </script>
 </body>

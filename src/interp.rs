@@ -2274,6 +2274,10 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
     });
 
     // — таблицы (ECS-компоненты и прочее состояние) —
+    def(env, "table?", |args| {
+        need(args, 1)?;
+        Ok(Value::Bool(matches!(&args[0], Value::Table(_))))
+    });
     def(env, "make-table", |_: &[Value]| {
         Ok(Value::Table(Rc::new(RefCell::new(HashMap::new()))))
     });

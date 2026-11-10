@@ -34,7 +34,7 @@
 | `src/simd.rs` | 2 | SAL: AVX-512/AVX2/SSE2/scalar + калибровка + mat4 |
 | `src/hal.rs` | 1 | фасад HAL: растровые команды, ввод, память, файлы, время, реестр текстур, **диспетчеризация бэкендов** |
 | `src/gpu.rs` | 1 | **бэкенды рендера (этап 1)**: `enum Backend` + трейт `GpuBackend`, менеджер ресурсов `GpuResources`, wgpu-рендерер (фича `wgpu`) |
-| `src/render3d.rs` | 1 | 3D fixed-function: T&L, near-clip (+UV), куллинг, z-буфер, батч-вершинник; **этап 7 — материалы: alpha-test, блик Blinn-Phong, тайлинг UV, туман** |
+| `src/render3d.rs` | 1 | 3D fixed-function: T&L, near-clip (+UV), куллинг, z-буфер, батч-вершинник; материалы (alpha-test, блик Blinn-Phong, тайлинг UV, туман, сглаженные нормали); билинейная фильтрация и Mipmapping ([docs/texture_filtering_and_mipmaps.md](file:///d:/Projects/active/rlisp-engine/docs/texture_filtering_and_mipmaps.md)); **динамические точечные источники света и карты теней PCF 2×2 ([docs/lighting_and_shadows_maintainer.md](file:///d:/Projects/active/rlisp-engine/docs/lighting_and_shadows_maintainer.md))** |
 | `src/png.rs` | 1 | PNG-кодек без зависимостей (писатель + полный inflate) |
 | `src/editor.rs` | 1 | HTTP-сервер редактора (std::net), мост кадр/сцена/команды; этап 6: камера/префабы в `/api/state`, `/api/save-scene` |
 | `src/mcp.rs`, `src/json.rs` | 1 | MCP (JSON-RPC 2.0, stdio, **reader/writer-потоки + mpsc**, этап 2), JSON |
@@ -74,14 +74,13 @@ tex_upload / tex_free / flush(fb, readback) -> (submit_ns, readback_ns)`.
 покрытые пиксели — под ними может быть результат программного 3D-конвейера.
 Так PNG/ASCII/редактор читают один и тот же fb при любом бэкенде.
 
-### Честно о покрытии этапа 1
+### Аппаратный 3D-конвейер на WebGPU
 
-- wgpu закрывает **2D-растр** (clear / fill-rect / blit / blit-tex /
-  present);
-- 3D-конвейер (`render3d.rs`: T&L, z-буфер, батчи) остаётся **программным**;
-  перенос батчей на GPU — этап 5 роадмапа;
-- критерий «`--wgpu` кратно быстрее» требует GPU-железа — см.
-  `docs/benchmark.md`.
+- В режиме `--wgpu` (фича `wgpu`) 3D-конвейер полностью перенесён на аппаратный GPU (`src/gpu_3d.rs`): T&L, аппаратный Z-буфер `Depth32Float`, Blinn-Phong, экспоненциальный туман и инстансированные батчи;
+- Полный обзор нововведения (от программного Flat Shading до аппаратного WebGPU с Phong и кэшированием): см. [docs/3d_pipeline_and_gpu.md](file:///d:/Projects/active/rlisp-engine/docs/3d_pipeline_and_gpu.md);
+- Подробная архитектура конвейера и руководство для разработчиков: см. [docs/wgpu_3d_pipeline.md](file:///d:/Projects/active/rlisp-engine/docs/wgpu_3d_pipeline.md);
+- Кэширование геометрии в VRAM (VBO/IBO) и On-Demand Readback для редактора: см. [docs/gpu_vbo_caching.md](file:///d:/Projects/active/rlisp-engine/docs/gpu_vbo_caching.md);
+- При отсутствии дискретного/интегрированного GPU-адаптера или без фичи сохраняется прозрачный откат на программный растр `Backend::Software`.
 
 ## Менеджер GPU-ресурсов
 

@@ -12,6 +12,7 @@ mod ecs;
 mod editor;
 mod gc;
 mod gpu;
+mod gpu_3d;
 mod hal;
 mod interp;
 #[cfg(feature = "jit")]
@@ -549,7 +550,7 @@ fn bench_frame_ops(hal: &mut Hal, sprite: &[u8], frames: usize) -> (f64, f64, f6
         for i in 0..4i64 {
             let _ = hal.blit_tex(1, i * 40, i * 40, 2.0, [1.0, 1.0, 1.0]);
         }
-        let (s, r) = hal.flush_gpu();
+        let (s, r) = hal.flush_gpu(true);
         sub += s;
         rb += r;
     }
@@ -632,11 +633,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
 
     // — программный растр (дефолт, ноль зависимостей) —
     let mut hal = Hal::new(OutputMode::Silent, 320, 240);
-    hal.tex.push(Tex {
-        w: 32,
-        h: 32,
-        px: tex.clone(),
-    });
+    hal.tex.push(Tex::new(32, 32, tex.clone()));
     hal.tex_register(1, 32, 32, &tex);
     let (t, _s, _r) = bench_frame_ops(&mut hal, &sprite, FRAMES_RUST);
     println!(
@@ -646,11 +643,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
     let halrc = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 320, 240)));
     {
         let mut h = halrc.borrow_mut();
-        h.tex.push(Tex {
-            w: 32,
-            h: 32,
-            px: tex.clone(),
-        });
+        h.tex.push(Tex::new(32, 32, tex.clone()));
         h.tex_register(1, 32, 32, &tex);
     }
     let lisp_soft = bench_lisp_scene(halrc, FRAMES_LISP)?;
@@ -679,11 +672,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
         240,
         gpu::Backend::Wgpu(gpu_backend),
     );
-    hal.tex.push(Tex {
-        w: 32,
-        h: 32,
-        px: tex.clone(),
-    });
+    hal.tex.push(Tex::new(32, 32, tex.clone()));
     hal.tex_register(1, 32, 32, &tex);
     let (t, s, r) = bench_frame_ops(&mut hal, &sprite, FRAMES_RUST);
     println!(
@@ -698,11 +687,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
     )));
     {
         let mut h = halrc.borrow_mut();
-        h.tex.push(Tex {
-            w: 32,
-            h: 32,
-            px: tex.clone(),
-        });
+        h.tex.push(Tex::new(32, 32, tex.clone()));
         h.tex_register(1, 32, 32, &tex);
     }
     let lisp_gpu = bench_lisp_scene(halrc, FRAMES_LISP)?;
@@ -852,11 +837,7 @@ fn bench_3d_shading() -> Result<(), String> {
     };
 
     let mut hal = Hal::new(OutputMode::Silent, 320, 240);
-    hal.tex.push(Tex {
-        w: 32,
-        h: 32,
-        px: px.clone(),
-    });
+    hal.tex.push(Tex::new(32, 32, px.clone()));
     hal.tex_register(1, 32, 32, &px);
     // свет и камера — как в игре: направление к источнику, view для блика
     hal.r3.light = [0.3, 0.7, 0.65];
@@ -875,7 +856,7 @@ fn bench_3d_shading() -> Result<(), String> {
         hal.r3.zbuf.fill(f32::INFINITY);
         hal.r3.drawn = 0;
         hal.r3.culled = 0;
-        render3d::batch_draw(hal, &s.pos, Some(&s.uv), &s.idx, &s.insts, &s.mvp, 1)
+        render3d::batch_draw(hal, &s.pos, Some(&s.uv), None, &s.idx, &s.insts, &s.mvp, 1)
     };
     let замер = |hal: &mut Hal, метка: &str, s: &Сцена3d| -> Result<f64, String> {
         // прогрев без замера (прогрев кэша/веток)
@@ -1294,6 +1275,15 @@ fn run_engine(args: &Args) -> Result<(), String> {
             d
         };
 
+        let need_readback = if let Some(b) = &bridge {
+            frames <= 1
+                || b.frame_requested
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            false
+        };
+        halrc.borrow_mut().readback_requested = need_readback;
+
         // кадр: update(dt) → draw() → frame-end() (в паузе редактора — пропуск)
         // RLISP_PROFILE=1 — накопление разбивки времени кадра (update/draw/
         // frame-end/GC) и печать каждые 120 кадров + в итоге
@@ -1374,10 +1364,15 @@ fn run_engine(args: &Args) -> Result<(), String> {
         if let Some(b) = &bridge {
             {
                 let mut hal = halrc.borrow_mut();
-                // wgpu-режим: живой вид редактора читает fb — досылаем GPU-слой
-                let _ = hal.flush_gpu();
-                *b.fb.lock().unwrap() = hal.fb.clone();
-                *b.fb_wh.lock().unwrap() = (hal.w, hal.h);
+                if hal.readback_requested {
+                    // Если (gpu-present) не вызывался из Lisp — досылаем с readback
+                    let _ = hal.flush_gpu(need_readback);
+                    hal.readback_requested = false;
+                }
+                if need_readback {
+                    *b.fb.lock().unwrap() = hal.fb.clone();
+                    *b.fb_wh.lock().unwrap() = (hal.w, hal.h);
+                }
                 b.drawcalls
                     .store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
             }

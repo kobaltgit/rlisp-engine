@@ -25,6 +25,8 @@
 (defpersistent *frame* 0)
 (defpersistent *fps-last* 0.0)
 (defpersistent *fps-last-val* 0.0)
+(defpersistent *lights* (make-table))
+(defpersistent *next-light-id* 1)
 
 ;; ——— мир ———
 (define *ia* 32.0)            ; полуразмер ландшафта (вместе с дном)
@@ -328,11 +330,11 @@
 (defmaterial 'трава  ':tiling '(6 6))
 (defmaterial 'камень ':tiling '(2 2) ':spec 0.18 ':shininess 26)
 (defmaterial 'дно    ':tiling '(4 4))
-(defmaterial 'кора   ':tiling '(2 3))
+(defmaterial 'кора   ':tiling '(2 3) ':shading 'smooth)
 (defmaterial 'листва ':tiling '(1 1))
 (defmaterial 'палма  ':tiling '(1 1))
 (defmaterial 'вода   ':spec 0.85 ':shininess 26)
-(defmaterial 'глинт  ':spec 0.4 ':shininess 40)
+(defmaterial 'глинт  ':spec 0.4 ':shininess 40 ':shading 'smooth)
 
 ;; ——— широколиственные деревья: ствол + крона из скрещенных квадрантов
 ;; с МЯГКОЙ листвой (alpha-blend, без жёсткого cutout) ———
@@ -447,7 +449,7 @@
 ;; меш (1 draw вместо батча кубов); UV: u — обхват, v — высота, tiling
 ;; материала 'кора (2 3) даёт 2 обхвата и 3 повтора по стволу
 (define (palm-cyl-mesh)
-  (let ((pos '()) (uv '()) (idx '()) (vi 0))
+  (let ((pos '()) (uv '()) (nrm '()) (idx '()) (vi 0))
     (define (rr tt) (- 0.21 (* 0.11 tt)))
     (dotimes (k *palm-n*)
       (let* ((p (palm-pos k))
@@ -467,6 +469,9 @@
                       (append pos
                               (list (+ cx (* r (cos aa))) cy
                                     (+ cz (* r (sin aa))))))
+                (set! nrm
+                      (append nrm
+                              (list (cos aa) 0.0 (sin aa))))
                 (set! uv (append uv (list (* si 0.125) tt)))))))
         (dotimes (ri 8)
           (dotimes (si 8)
@@ -475,7 +480,7 @@
                    (c (+ a 8)) (d (+ b 8)))
               (set! idx (append idx (list a c b  b c d))))))
         (set! vi (+ vi 72))))
-    (list (f32-from-list pos) (f32-from-list uv) (f32-from-list idx))))
+    (list (f32-from-list pos) (f32-from-list uv) (f32-from-list idx) (f32-from-list nrm))))
 (define *ptrunk* (palm-cyl-mesh))
 
 ;; листья: локальный квад вдоль +x, roll (Rz) топит его вниз, yaw раскладывает
@@ -857,6 +862,19 @@
     (gpu3d-clear 0.74 0.83 0.90)
     (gpu3d-view (car eye) (cadr eye) (caddr eye))
     (gpu3d-light 0.40 0.68 0.30 0.43 0.83 0.55 44)
+    (clear-point-lights)
+    (for-each
+     (lambda (entry)
+       (let ((l (cadr entry)))
+         (add-point-light (table-get l 'x 0.0)
+                          (table-get l 'y 1.5)
+                          (table-get l 'z 0.0)
+                          (table-get l 'r 1.0)
+                          (table-get l 'g 0.85)
+                          (table-get l 'b 0.4)
+                          (table-get l 'radius 16.0)
+                          (table-get l 'intensity 1.8))))
+     (table-entries *lights*))
     (gpu3d-fog 0.72 0.82 0.90 0.016)
     ;; ландшафт: 4 полосы одним вершинным буфером (дно темнее тинтом)
     (draw-mesh-tex (list *ipos* *idx-sand*) *iuv* *tex-sand*
@@ -886,7 +904,7 @@
                     *tex-leaf* *crown-cache* mvp 'листва)
     ;; пальмы: ствол (opaque) + листья (blend, ветер)
     (gpu3d-alpha-blend 1.0)
-    (draw-mesh-tex (list (car *ptrunk*) (caddr *ptrunk*))
+    (draw-mesh-tex (list (car *ptrunk*) (caddr *ptrunk*) (cadddr *ptrunk*))
                    (cadr *ptrunk*) *tex-bark* (mat-identity) mvp
                    (list 1 1 1) 'кора)
     (gpu3d-alpha-blend 0.98)
@@ -928,13 +946,13 @@
              6 21 1 (list 0.7 0.9 0.6)))
 
 (define (refresh-caches!)
-  (if (= 0 (mod *frame* 2))
+  (if (= 0 (mod *frame* 4))
       (begin
         (set! *crown-cache* (crown-insts))
         (set! *frond-cache* (palm-frond-insts))
         (set! *bird-cache* (bird-insts)))
       #f)
-  (if (= 0 (mod *frame* 6))
+  (if (= 0 (mod *frame* 12))
       (set! *cloud-cache* (cloud-insts))
       #f)
   #t)
@@ -982,3 +1000,71 @@
 (set! *cloud-cache* (cloud-insts))
 (define *fps-clock* (time-now))
 (print "ISLAND GFX2: PNG-текстуры/alpha-blend/вода-fresnel+пена/пальмы/тени/облака готовы")
+
+;; ——— мост редактора/MCP: источники света и гизмо ———
+(define (spawn-light x y z r g b radius intensity)
+  (let ((id *next-light-id*))
+    (set! *next-light-id* (+ id 1))
+    (let ((l (make-table)))
+      (table-set! l 'x x)
+      (table-set! l 'y y)
+      (table-set! l 'z z)
+      (table-set! l 'r r)
+      (table-set! l 'g g)
+      (table-set! l 'b b)
+      (table-set! l 'radius radius)
+      (table-set! l 'intensity intensity)
+      (table-set! l 'kind 'light)
+      (table-set! *lights* (number->string id) l)
+      (table-set! *lights* id l)
+      id)))
+
+(if (= (length (table-entries *lights*)) 0)
+    (spawn-light -3.4 (+ (isl-h -3.4 3.4) 1.5) 3.4 1.0 0.82 0.35 16.0 2.2)
+    #f)
+
+(define (game-entity id)
+  (let ((sid (number->string id)))
+    (let ((l (table-get *lights* sid #f)))
+      (if l l
+          (error (string-append "нет сущности #" sid))))))
+
+(define (game-remove! id)
+  (let ((sid (number->string id)))
+    (table-remove! *lights* sid)
+    (table-remove! *lights* id)))
+
+(define (game-spawn-at kind x z)
+  (if (eq? kind 'light)
+      (spawn-light x (+ (isl-h x z) 1.5) z 1.0 0.85 0.4 16.0 1.8)
+      (error (string-append "неизвестный префаб: " (symbol->string kind)))))
+
+(define (game-spawn kind)
+  (game-spawn-at kind 0.0 0.0))
+
+(define (scene-entities)
+  (map (lambda (entry)
+         (let* ((id (string->number (car entry))) (l (cadr entry)))
+           (obj 'id id 'type "light" 'name "Источник света"
+                'ref (string-append "(game-entity " (number->string id) ")")
+                'x (table-get l 'x 0.0)
+                'y (table-get l 'y 1.5)
+                'z (table-get l 'z 0.0)
+                'r (table-get l 'r 1.0)
+                'g (table-get l 'g 0.85)
+                'b (table-get l 'b 0.4)
+                'radius (table-get l 'radius 16.0)
+                'intensity (table-get l 'intensity 1.8))))
+       (table-entries *lights*)))
+
+(define (prefab-list)
+  (list (obj 'kind "light" 'name "Источник света" 'desc "Точечный свет 3D")))
+
+(define (editor-camera)
+  (let* ((eye (list (* 20.5 (cos (* *t* 0.10)))
+                    (+ 9.6 (* 0.9 (sin (* *t* 0.071))))
+                    (* 20.5 (sin (* *t* 0.10))))))
+    (obj 'eye eye
+         'target (list 0 2.2 0)
+         'fov 0.95
+         'w *screen-w* 'h *screen-h*)))
