@@ -423,7 +423,24 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
 6. JIT for eval (spec §10.1) — numeric kernels done in stage 3 (49×);
    extending coverage is the next step.
 
-## Demo: Island (stage 8, branch stage8/island)
+## Demo: Island (stage 9, graphics revision 4 — tessellation)
+
+Scene: assets/lisp/island.lisp. New since revision 3:
+- **Terrain 61x61 vertices** (step 1.07 vs 1.78) — smooth slopes instead
+  of facets; water 25x25 (step 4.7);
+- **palm trunks are smooth cylinders** (8 sides x 9 rings, bent along the
+  lean curve, taper 0.21→0.10, all 7 palms merged into one static mesh)
+  instead of cube stacks;
+- **rocks are noise boulders** (7x10 sphere with hash-jittered radius)
+  instead of octahedra;
+- engine: scratch buffers and a **projected-vertex cache** in the
+  rasterizer (no per-triangle allocations, project6 runs once per grid
+  vertex instead of 4);
+- tradeoff: 20–21 fps @ 320x240 headless (--fast) at ~11.2k triangles
+  (HUD counter, no glTF; revision 3: 27–28 fps @ 3.4k). Tessellation
+  costs ~2.3 µs/triangle
+  (bbox scan with full per-pixel shading); an incremental scanline
+  rasterizer is the next engine step (see LIMITATIONS.md).
 
 ## Demo: Island (stage 9, graphics revision 3)
 
