@@ -1098,6 +1098,23 @@ fn run_engine(args: &Args) -> Result<(), String> {
         (hb.w, hb.h)
     };
 
+    // --width/--height — авторитет CLI: window-create сцены мог задать свой
+    // размер (константы graphics.lisp) — возвращаем размер из аргументов и
+    // синхронизируем *screen-w*/*screen-h*, чтобы HUD/небо сцены строились
+    // под реальный фреймбуфер (раньше --width менял только буфер HAL).
+    if (w, h) != (args.width, args.height) {
+        halrc.borrow_mut().resize_window(args.width, args.height);
+    }
+    if args.width != 320 || args.height != 240 {
+        let g = *cell.borrow();
+        for (name, val) in [("*screen-w*", args.width), ("*screen-h*", args.height)] {
+            let code = format!("(set! {} {})", name, val);
+            for form in parse_program(&code)? {
+                interp::eval(&form, g, 0)?;
+            }
+        }
+    }
+
     // v0.3: мост редактора (--serve) — публикуем кадр/сцену, принимаем команды
     let bridge = if args.serve {
         let b = editor::Bridge::new();
@@ -1160,6 +1177,15 @@ fn run_engine(args: &Args) -> Result<(), String> {
     let wall_start = Instant::now();
     let mut last_frame_at = Instant::now();
     let mut next_frame = wall_start + Duration::from_secs_f64(fixed_dt);
+    // профилировка кадра: RLISP_PROFILE=1 → разбивка update/draw/frame-end/
+    // gc/прочее (мс на кадр, среднее за 120 кадров)
+    let prof = std::env::var_os("RLISP_PROFILE").is_some();
+    let mut t_upd = Duration::ZERO;
+    let mut t_draw = Duration::ZERO;
+    let mut t_fe = Duration::ZERO;
+    let mut t_gc = Duration::ZERO;
+    let mut t_all = Duration::ZERO;
+    let mut t_frame = Instant::now();
 
     while frames < args.frames {
         // ввод из сценария
@@ -1254,14 +1280,21 @@ fn run_engine(args: &Args) -> Result<(), String> {
         };
 
         // кадр: update(dt) → draw() → frame-end() (в паузе редактора — пропуск)
+        // RLISP_PROFILE=1 — накопление разбивки времени кадра (update/draw/
+        // frame-end/GC) и печать каждые 120 кадров + в итоге
         if !editor_skip {
             let g = *cell.borrow();
             let mut err: Option<String> = None;
+            let t0 = Instant::now();
             if let Some(f) = env_get(g, "update") {
                 if let Err(e) = apply(&f, &[Value::Float(dt)], 0) {
                     err = Some(format!("update: {}", e));
                 }
             }
+            if prof {
+                t_upd += t0.elapsed();
+            }
+            let t0 = Instant::now();
             if err.is_none() {
                 if let Some(f) = env_get(g, "draw") {
                     if let Err(e) = apply(&f, &[], 0) {
@@ -1269,10 +1302,17 @@ fn run_engine(args: &Args) -> Result<(), String> {
                     }
                 }
             }
+            if prof {
+                t_draw += t0.elapsed();
+            }
+            let t0 = Instant::now();
             if err.is_none() {
                 if let Some(f) = env_get(g, "frame-end") {
                     let _ = apply(&f, &[], 0);
                 }
+            }
+            if prof {
+                t_fe += t0.elapsed();
             }
             if let Some(e) = err {
                 return Err(format!("кадр {}: {}", frames, e));
@@ -1282,7 +1322,35 @@ fn run_engine(args: &Args) -> Result<(), String> {
         // Этап 2: граница форм — авто-сборка GC. Очередь ввода (Value-события)
         // передаём как дополнительные корни: в будущем события могут нести пары.
         let queue_roots = halrc.borrow().queue.clone();
+        let t0 = Instant::now();
         gc::maybe_collect(&[*cell.borrow()], &queue_roots);
+        if prof {
+            t_gc += t0.elapsed();
+        }
+
+        if prof {
+            t_all += t_frame.elapsed();
+            t_frame = Instant::now();
+            if frames % 120 == 119 {
+                let k = 120.0 / (t_all.as_secs_f64() + 1e-9);
+                eprintln!(
+                    "[profile] update {:.1} | draw {:.1} | frame-end {:.1} | gc {:.1} | прочее {:.1} мс/кадр ({} fps)",
+                    t_upd.as_secs_f64() * 1e3 / 120.0,
+                    t_draw.as_secs_f64() * 1e3 / 120.0,
+                    t_fe.as_secs_f64() * 1e3 / 120.0,
+                    t_gc.as_secs_f64() * 1e3 / 120.0,
+                    (t_all - t_upd - t_draw - t_fe - t_gc).as_secs_f64() * 1e3 / 120.0,
+                    (k as u32)
+                );
+                t_all = Duration::ZERO;
+                (t_upd, t_draw, t_fe, t_gc) = (
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                );
+            }
+        }
 
         frames += 1;
         sim_time += dt;
