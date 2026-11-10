@@ -476,7 +476,7 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             let id: u64 = q.get("id").and_then(|s| s.parse().ok()).unwrap_or(0);
             let wav_bytes = if let Some(audio_arc) = bridge.audio.lock().unwrap().as_ref() {
                 let m = audio_arc.lock().unwrap();
-                m.sounds.get(&id).map(|s| crate::audio::WavCodec::encode(s))
+                m.sounds.get(&id).map(crate::audio::WavCodec::encode)
             } else {
                 None
             };
@@ -702,11 +702,7 @@ mod tests {
         // сериализация во временный файл: 3 формы (2 врага + игрок)
         let path = std::env::temp_dir().join("rlisp_scene_roundtrip.lisp");
         let path_str = path.to_string_lossy().replace('\\', "/");
-        let res = eval_string(
-            &format!("(editor-save-scene \"{}\")", path_str),
-            &cell,
-        )
-        .unwrap();
+        let res = eval_string(&format!("(editor-save-scene \"{}\")", path_str), &cell).unwrap();
         assert_eq!(fmt_value(&res), "3");
 
         // файл парсится назад читателем — формы восстановления с позициями

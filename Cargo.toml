@@ -20,13 +20,14 @@ codegen-units = 1
 # линейки wgpu требуют более свежий rustc (24.x — новее, 30.x — 1.87+).
 # Нативные бэкенды (Vulkan/GL/Metal/DX12) в 0.20 входят в поставку wgpu
 # без отдельных фич — на Linux используется Vulkan/GL, offscreen, без окна.
-# [dependencies.wgpu]
-# version = "0.20"
-# optional = true
+[dependencies.wgpu]
+version = "0.20"
+optional = true
 
 [features]
 default = []
-wgpu = []
+# Full wgpu-бэкенд: offscreen-рендер + readback в Hal::fb (см. src/gpu.rs).
+wgpu = ["dep:wgpu"]
 # Этап 3: copy-and-patch JIT числовых ядер (x86_64-linux, ноль зависимостей).
 # Дефолтная сборка без jit: интерпретатор и SIMD-токенизатор работают как раньше.
 jit = []

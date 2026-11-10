@@ -1046,8 +1046,12 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "sound-synth", move |args| {
         need(args, 3)?;
         let wave_str = str_val(&args[0]);
-        let wave = crate::audio::Waveform::from_str(&wave_str)
-            .ok_or_else(|| format!("sound-synth: неизвестная форма волны '{}' (square, saw, triangle, sine, noise)", wave_str))?;
+        let wave = crate::audio::Waveform::from_str(&wave_str).ok_or_else(|| {
+            format!(
+                "sound-synth: неизвестная форма волны '{}' (square, saw, triangle, sine, noise)",
+                wave_str
+            )
+        })?;
         let freq = num_val(&args[1])? as f32;
         let duration = num_val(&args[2])? as f32;
         let attack = args.get(3).map(num_val).transpose()?.unwrap_or(0.01) as f32;
@@ -1068,7 +1072,8 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
             pitch_slide,
             duty_cycle,
         };
-        let sound = crate::audio::synth_sound(0, format!("synth_{}_{:.0}hz", wave.as_str(), freq), &params);
+        let sound =
+            crate::audio::synth_sound(0, format!("synth_{}_{:.0}hz", wave.as_str(), freq), &params);
         let hal = h.borrow();
         let mut audio = hal.audio.lock().unwrap();
         let id = audio.add_sound(sound);
@@ -1082,7 +1087,13 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         let vol = args.get(1).map(num_val).transpose()?.unwrap_or(1.0) as f32;
         let pitch = args.get(2).map(num_val).transpose()?.unwrap_or(1.0) as f32;
         let pan = args.get(3).map(num_val).transpose()?.unwrap_or(0.0) as f32;
-        let looping = args.get(4).map(|v| match v { Value::Bool(b) => *b, _ => false }).unwrap_or(false);
+        let looping = args
+            .get(4)
+            .map(|v| match v {
+                Value::Bool(b) => *b,
+                _ => false,
+            })
+            .unwrap_or(false);
 
         let hal = h.borrow();
         let mut audio = hal.audio.lock().unwrap();
@@ -1123,7 +1134,7 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "sound-master-volume", move |args| {
         let hal = h.borrow();
         let mut audio = hal.audio.lock().unwrap();
-        if let Some(arg) = args.get(0) {
+        if let Some(arg) = args.first() {
             let vol = num_val(arg)? as f32;
             audio.set_master_volume(vol);
         }
@@ -1137,7 +1148,10 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         let mut tbl = HashMap::new();
         tbl.insert("voices".into(), Value::Int(audio.voices.len() as i64));
         tbl.insert("sounds".into(), Value::Int(audio.sounds.len() as i64));
-        tbl.insert("master-volume".into(), Value::Float(audio.master_volume as f64));
+        tbl.insert(
+            "master-volume".into(),
+            Value::Float(audio.master_volume as f64),
+        );
         Ok(Value::Table(Rc::new(RefCell::new(tbl))))
     });
 }
