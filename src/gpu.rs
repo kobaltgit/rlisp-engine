@@ -292,7 +292,7 @@ fn vs_main(
 
 @fragment
 fn fs_solid(@location(0) uv: vec2<f32>, @location(1) tint: vec3<f32>) -> @location(0) vec4<f32> {
-    let _ = uv;
+    _ = uv; // phony-assignment: uv не участвует ('let _' невалиден в WGSL)
     return vec4<f32>(tint, 1.0);
 }
 
