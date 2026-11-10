@@ -11,6 +11,7 @@ const CORR: f32 = 0.8; // доля коррекции проникновения
 const BOUNCE_THRESH: f32 = 0.4; // |vn| ниже — отскок гасится (покой)
 const VEL_MAX: f32 = 60.0; // страховка от разгона
 const ITER: usize = 4; // итерации последовательных импульсов
+const ANGV_MAX: f32 = 60.0; // страховка от раскрутки, рад/с
 const PAIR_COOLDOWN: f32 = 0.09; // повторный стук пары — не чаще
 
 /// событие контакта (для звука в песочнице и ряби в сценах)
@@ -42,11 +43,16 @@ pub struct Sphere {
     pub e: f32,
     /// трение Кулона
     pub mu: f32,
-    /// накопленный крен (угол + ось) — для визуального вращения
+    /// накопленный поворот (угол + ось) — интегрируется из угловой скорости
     pub ang: f32,
     pub ax: f32,
     pub ay: f32,
     pub az: f32,
+    /// угловая скорость, рад/с (сфера изотропна — скалярная инерция на все оси);
+    /// контактная динамика спина — этап 12 (нужен NGS-солвер, см. LIMITATIONS)
+    pub wx: f32,
+    pub wy: f32,
+    pub wz: f32,
 }
 
 impl Sphere {
@@ -68,6 +74,9 @@ impl Sphere {
             ax: 0.0,
             ay: 1.0,
             az: 0.0,
+            wx: 0.0,
+            wy: 0.0,
+            wz: 0.0,
         }
     }
 }
@@ -207,6 +216,9 @@ impl World {
                 s.vx *= f;
                 s.vy *= f;
                 s.vz *= f;
+                s.wx *= f;
+                s.wy *= f;
+                s.wz *= f;
             }
         }
         // 2) контакты (в порядке индексов — детерминизм)
@@ -338,12 +350,29 @@ impl World {
             s.x += s.vx * h;
             s.y += s.vy * h;
             s.z += s.vz * h;
-            let vh = (s.vx * s.vx + s.vz * s.vz).sqrt();
-            if vh > 1e-4 {
-                s.ang += vh * h / s.r;
-                s.ax = -s.vz / vh;
-                s.az = s.vx / vh;
-                s.ay = 0.0;
+            // угловая скорость: страховка + накопление поворота (полёт/вода;
+            // на земле крен ведёт трение качением — линейная модель этапа 10)
+            let w2 = s.wx * s.wx + s.wy * s.wy + s.wz * s.wz;
+            if w2 > ANGV_MAX * ANGV_MAX {
+                let k = ANGV_MAX / w2.sqrt();
+                s.wx *= k;
+                s.wy *= k;
+                s.wz *= k;
+            }
+            let wh = w2.sqrt();
+            if wh > 1e-4 {
+                s.ang += wh * h;
+                s.ax = s.wx / wh;
+                s.ay = s.wy / wh;
+                s.az = s.wz / wh;
+            } else {
+                let vh = (s.vx * s.vx + s.vz * s.vz).sqrt();
+                if vh > 1e-4 {
+                    s.ang += vh * h / s.r;
+                    s.ax = -s.vz / vh;
+                    s.az = s.vx / vh;
+                    s.ay = 0.0;
+                }
             }
             // страховка
             let v2 = s.vx * s.vx + s.vy * s.vy + s.vz * s.vz;
@@ -357,6 +386,11 @@ impl World {
                 s.vx = 0.0;
                 s.vy = 0.0;
                 s.vz = 0.0;
+            }
+            if !(s.wx.is_finite() && s.wy.is_finite() && s.wz.is_finite()) {
+                s.wx = 0.0;
+                s.wy = 0.0;
+                s.wz = 0.0;
             }
         }
         // 5) коррекция проникновений (позиционная, статика — вся доля шару)
@@ -617,6 +651,45 @@ pub fn register(env: crate::interp::Gc, worlds: std::rc::Rc<std::cell::RefCell<V
         Ok(V::Int(n as i64))
     });
 
+    // пакетная выгрузка угловой скорости: out ← [wx wy wz]×n
+    let wc = worlds.clone();
+    def(env, "phys-angvels!", move |args| {
+        need(args, 2)?;
+        let out = vec_of(&args[1])?;
+        let w = world_of(&wc, &args[0])?;
+        let n = w.spheres.len();
+        {
+            let mut ob = out.borrow_mut();
+            ob.clear();
+            ob.reserve(n * 3);
+            for s in &w.spheres {
+                ob.extend_from_slice(&[s.wx, s.wy, s.wz]);
+            }
+        }
+        Ok(V::Int(n as i64))
+    });
+
+    // ручная раскрутка: (phys-angvel! w id wx wy wz) — рад/с
+    let wc = worlds.clone();
+    def(env, "phys-angvel!", move |args| {
+        need(args, 5)?;
+        let mut w = world_of(&wc, &args[0])?;
+        let id = num_val(&args[1])? as usize;
+        let (wx, wy, wz) = (
+            num_val(&args[2])? as f32,
+            num_val(&args[3])? as f32,
+            num_val(&args[4])? as f32,
+        );
+        let s = w
+            .spheres
+            .get_mut(id)
+            .ok_or_else(|| format!("phys-angvel!: нет тела {}", id))?;
+        s.wx = wx;
+        s.wy = wy;
+        s.wz = wz;
+        Ok(V::Nil)
+    });
+
     // пакетная выгрузка крена: out ← [ang ax ay az]×n (визуальное вращение)
     let wc = worlds.clone();
     def(env, "phys-spin!", move |args| {
@@ -868,5 +941,78 @@ mod tests {
         }
         assert!(hits >= 1, "удар должен давать событие");
         assert!(w.events.iter().all(|e| e.kind == 0 && e.b == -1));
+    }
+
+    #[test]
+    fn spin_conserved_in_flight() {
+        let mut w = World::new();
+        w.hf = Some(flat_hf());
+        w.add(Sphere::new(0.0, 20.0, 0.0, 0.5, 0.5, 0.3));
+        w.spheres[0].wx = 10.0;
+        w.spheres[0].wy = -7.0;
+        w.spheres[0].wz = 3.0;
+        // 0.5 c свободного падения с 20 м — контактов нет
+        sim(&mut w, 0.5, 1.0 / 60.0);
+        let s = &w.spheres[0];
+        assert_eq!(s.wx.to_bits(), 10.0f32.to_bits());
+        assert_eq!(s.wy.to_bits(), (-7.0f32).to_bits());
+        assert_eq!(s.wz.to_bits(), 3.0f32.to_bits());
+        // поворот накопился: |ω|·t = sqrt(158)·0.5 ≈ 6.28 рад
+        assert!(
+            (s.ang - 158.0f32.sqrt() * 0.5).abs() < 1e-4,
+            "ang {}",
+            s.ang
+        );
+    }
+
+    #[test]
+    fn spin_damped_in_water() {
+        let mut w = World::new();
+        w.hf = Some(flat_hf());
+        w.water = true;
+        w.water_y = 5.0;
+        w.buoy = 30.0;
+        w.drag = 1.5;
+        w.add(Sphere::new(0.0, 2.0, 0.0, 0.5, 0.5, 0.3));
+        w.spheres[0].wz = 20.0;
+        sim(&mut w, 1.0, 1.0 / 60.0);
+        let s = &w.spheres[0];
+        assert!(s.wz < 20.0 && s.wz.abs() > 0.5, "drag ω: {}", s.wz);
+        assert!(s.y > w.water_y - s.r, "не всплыл: {}", s.y);
+    }
+
+    #[test]
+    fn bitwise_deterministic_with_spin() {
+        let mk = || {
+            let mut w = World::new();
+            w.hf = Some(flat_hf());
+            w.add(Sphere::new(0.0, 4.0, 0.0, 0.45, 0.65, 0.45));
+            w.add(Sphere::new(0.6, 5.5, 0.2, 0.45, 0.65, 0.45));
+            w.spheres[0].wz = 12.0;
+            w.spheres[1].wx = -9.0;
+            w
+        };
+        let (mut a, mut b) = (mk(), mk());
+        for _ in 0..240 {
+            a.step(1.0 / 60.0);
+            b.step(1.0 / 60.0);
+        }
+        for (pa, pb) in a.spheres.iter().zip(b.spheres.iter()) {
+            assert_eq!(pa.x.to_bits(), pb.x.to_bits());
+            assert_eq!(pa.y.to_bits(), pb.y.to_bits());
+            assert_eq!(pa.wx.to_bits(), pb.wx.to_bits());
+            assert_eq!(pa.wz.to_bits(), pb.wz.to_bits());
+        }
+    }
+
+    #[test]
+    fn angvel_clamped() {
+        let mut w = World::new();
+        w.hf = Some(flat_hf());
+        w.add(Sphere::new(0.0, 0.5, 0.0, 0.5, 0.0, 0.5));
+        w.spheres[0].wx = 1000.0;
+        w.step(1.0 / 60.0);
+        let s = &w.spheres[0];
+        assert!(s.wx.abs() <= ANGV_MAX + 1.0, "ω не зажата: {}", s.wx);
     }
 }

@@ -74,8 +74,10 @@ with sync_playwright() as p:
 
     # мини-сцена с мячами
     pg.select_option("#preset", "Мячи и трамплин (мини-сцена)")
-    pg.wait_for_timeout(2500)
-    pg.fill("#replin", "(phys-n *phys*)")
+    pg.wait_for_function(
+        "() => [...document.querySelectorAll('#console div')].some(e => e.textContent.includes('BALLS'))",
+        timeout=10000)
+    pg.fill("#replin", "(phys-n *w*)")
     pg.click("#replgo")
     pg.wait_for_timeout(200)
     con_balls = pg.text_content("#console div:last-child")
