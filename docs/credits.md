@@ -37,3 +37,16 @@ RGBA-спрайты (премультиплицированные). Внешни
 
 ## Ориджин
 - License CC0-1.0: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+## Модель Fox (этапы 21–23, «ОПЕРАЦИЯ ОАЗИС»)
+
+- Источник: Khronos glTF-Sample-Models, `2.0/Fox` (fox.gltf, Fox.bin,
+  Texture.png) — скачано из сети 2026-11-10, raw.githubusercontent.com.
+- Автор: Low poly fox by PixelMannen (opengameart.org «Fox and Shiba»).
+- Лицензия: **CC0 1.0** — проверена по README.md модели в репозитории
+  Khronos (раздел License Information) перед включением в репозиторий.
+- Рассмотрены и отклонены: CesiumMan («donated for glTF testing» + trademark
+  terms Cesium) и BrainStem (Poser Pro EULA, clause (g)) — условия не
+  допускают чистое перераспределение.
+- Файлы: assets/models/fox.gltf, Fox.bin, Texture.png + LICENSES.md.
+- Вшиты в бинарь (EMBEDDED_FILES) — файлы и в WASM-песочнице.

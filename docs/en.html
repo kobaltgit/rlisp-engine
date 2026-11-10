@@ -170,7 +170,7 @@
     </p>
     <div class="hero-cta">
       <a class="btn btn-main" href="playground.html">Play in the browser — no build step</a>
-      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Download v0.14.0</a>
+      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Download v0.15.0</a>
       <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine">GitHub →</a>
     </div>
     <div class="hero-gif">
@@ -278,6 +278,28 @@
   </div>
 </section>
 
+<section id="oasis">
+  <div class="wrap">
+    <h2>“OPERATION OASIS” <span class="tag">stages 21–23: skinning + a playable FPS</span></h2>
+    <p class="lead">The fox model was <b>fetched from the internet</b> (Khronos glTF-Sample-Models, CC0 — licenses verified against the README) and brought to life inside the software rasterizer: per-vertex skinning, the Run animation sampled from glTF (nlerp quaternions), waves charge head-first, bite, and fall over when killed. The player walks dunes, shoots with tracers and muzzle flash, sees a recoil-driven weapon viewmodel, particles, sound, HUD, death/restart screens. All gameplay is Lisp on top of the native layer.</p>
+    <div class="demos">
+      <div class="demo"><img src="img/oasis.gif" alt="Operation Oasis gameplay" loading="lazy">
+        <div class="cap"><b>Gameplay</b>W/S move · A/D turn · F fire · R restart. Foxes close in, bite, waves grow.</div></div>
+      <div class="demo"><img src="img/fox_skin_test.png" alt="Skinned Fox model" loading="lazy">
+        <div class="cap"><b>Model from the web</b>Fox (CC0): 1728 vertices, 24 joints, JOINTS_0/WEIGHTS_0 + inverseBind; Walk/Run animations sampled in Lisp.</div></div>
+    </div>
+    <div class="tbl-card">
+      <table>
+        <tr><th>Under the hood</th><th>How it works</th></tr>
+        <tr><td><b>gpu3d-mesh-skin</b></td><td>up to 4 influences per vertex with weight normalization; one pose cache per frame shared by all foxes</td></tr>
+        <tr><td><b>glTF loader</b></td><td>JOINTS_0/WEIGHTS_0, inverseBindMatrices (MAT4), node hierarchy, rotation/translation/scale channels</td></tr>
+        <tr><td><b>Model in the binary</b></td><td>EMBEDDED_FILES: fox.gltf/Fox.bin/Texture.png — the browser sandbox plays even without a filesystem</td></tr>
+        <tr><td><b>Playwright</b></td><td>the “OASIS” preset in the playground: f/w/a keys, the fox renders, 24 fps, zero JS errors</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
 <section id="bench">
   <div class="wrap">
     <h2>Benchmarks <span class="tag">honest methodology</span></h2>
@@ -316,7 +338,7 @@
   <div class="wrap">
     <h2>Try it</h2>
     <div class="cards">
-      <div class="card"><h3>In the browser</h3><p><a href="playground.html">The sandbox (playground.html)</a> — the whole engine in WASM: a Lisp editor, REPL, scene presets, sound. Opens as a file, zero network.</p></div>
+      <div class="card"><h3>In the browser</h3><p><a href="playground.html">The sandbox (playground.html)</a> — the whole engine in WASM: a Lisp editor, REPL, scene presets (including the playable “OASIS” FPS with the fox model baked in), sound. Opens as a file, zero network.</p></div>
       <div class="card"><h3>Natively</h3><p><code style="font-family:var(--mono);font-size:13px">tar -xzf rlisp-engine-v*.tar.gz && ./rlisp-engine --script lisp/main_physpoly.lisp</code> — a binary + scenes + documentation.</p></div>
       <div class="card"><h3>From source</h3><p><code style="font-family:var(--mono);font-size:13px">cargo run --release -- --script assets/lisp/main_physpoly.lisp --capture demo/frames --every 6 --frames 240 --fast</code> — build and shoot a demo.</p></div>
     </div>
