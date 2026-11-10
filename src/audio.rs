@@ -157,8 +157,7 @@ pub fn synth_sound(id: u64, name: String, params: &SynthParams) -> SoundBuffer {
                 rng_state ^= rng_state << 13;
                 rng_state ^= rng_state >> 17;
                 rng_state ^= rng_state << 5;
-                let norm = (rng_state as f32 / u32::MAX as f32) * 2.0 - 1.0;
-                norm
+                (rng_state as f32 / u32::MAX as f32) * 2.0 - 1.0
             }
         };
 
@@ -270,7 +269,10 @@ impl WavCodec {
                     return Err("WAV: data чанк встречен раньше fmt".into());
                 }
                 if audio_format != 1 {
-                    return Err(format!("WAV: поддерживается только PCM (формат {})", audio_format));
+                    return Err(format!(
+                        "WAV: поддерживается только PCM (формат {})",
+                        audio_format
+                    ));
                 }
                 let end = (pos + chunk_size).min(bytes.len());
                 let data_slice = &bytes[pos..end];
@@ -782,7 +784,7 @@ mod tests {
                 duty_cycle: 0.5,
             };
             let buf = synth_sound(1, format!("test_{}", wave.as_str()), &params);
-            assert!(buf.samples.len() > 0);
+            assert!(!buf.samples.is_empty());
             assert_eq!(buf.channels, 1);
             assert_eq!(buf.sample_rate, 44100);
         }
@@ -800,8 +802,8 @@ mod tests {
         let wav_bytes = WavCodec::encode(&original);
         assert!(wav_bytes.len() > 44);
 
-        let decoded = WavCodec::decode(42, "sine440".into(), &wav_bytes)
-            .expect("WAV decode should succeed");
+        let decoded =
+            WavCodec::decode(42, "sine440".into(), &wav_bytes).expect("WAV decode should succeed");
         assert_eq!(decoded.sample_rate, original.sample_rate);
         assert_eq!(decoded.channels, original.channels);
         assert_eq!(decoded.samples.len(), original.samples.len());
@@ -838,6 +840,10 @@ mod tests {
 
         mixer.stop(vid);
         mixer.mix(&mut out);
-        assert_eq!(mixer.voices.len(), 0, "Остановленный голос должен быть удален");
+        assert_eq!(
+            mixer.voices.len(),
+            0,
+            "Остановленный голос должен быть удален"
+        );
     }
 }

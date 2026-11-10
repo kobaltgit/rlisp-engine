@@ -1727,7 +1727,10 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
     });
     def(env, "number?", |args| {
         need(args, 1)?;
-        Ok(Value::Bool(matches!(&args[0], Value::Int(_) | Value::Float(_))))
+        Ok(Value::Bool(matches!(
+            &args[0],
+            Value::Int(_) | Value::Float(_)
+        )))
     });
     def(env, "symbol?", |args| {
         need(args, 1)?;
