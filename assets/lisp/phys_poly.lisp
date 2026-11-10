@@ -547,8 +547,8 @@
 ;; ——— сцена ———
 (define (draw-scene)
   (let* ((ca *cam-a*)
-         (eye (list (* 24.0 (cos ca)) (+ 10.5 (* 0.5 (sin (* *t* 0.13)))) (* 24.0 (sin ca))))
-         (mvp (camera-mvp eye (list 0 3.4 0) 0.95)))
+         (eye (list 0 1.62 -14))
+         (mvp (camera-mvp eye (list 0 0.6 -24) 0.95)))
     (gpu3d-clear 0.74 0.83 0.90)
     (gpu3d-view (car eye) (cadr eye) (caddr eye))
     (gpu3d-light 0.40 0.68 0.30 0.50 0.78 0.55 44)

@@ -185,6 +185,10 @@ impl R3 {
             self.w = w;
             self.h = h;
             self.zbuf = vec![f32::INFINITY; w * h];
+        } else {
+            // каждый gpu3d-clear = новый кадр: z-буфер обязан обнуляться,
+            // иначе прошлый кадр «экранирует» геометрию (провалы в небо)
+            self.zbuf.fill(f32::INFINITY);
         }
     }
 }
@@ -1793,7 +1797,17 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let b = num_val(&args[10])?;
         let out = skin_blend(&pos, &joints, &weights, &jmat)?;
         let nv = pos.len() / 3;
-        let seq: Vec<f32> = (0..nv).map(|i| i as f32).collect();
+        // двусторонность: mesh-путь куll'ит backfaces, а скиннед-модель
+        // игрок видит с ЛЮБОЙ стороны (нос к камере = все грани CW) —
+        // добавляем реверсивные треугольники (2× tris, честно дёшево)
+        let mut seq: Vec<f32> = (0..nv).map(|i| i as f32).collect();
+        let mut i = 0;
+        while i + 2 < nv {
+            seq.push((i + 2) as f32);
+            seq.push((i + 1) as f32);
+            seq.push(i as f32);
+            i += 3;
+        }
         check_tex_uv(Some(&uv), nv)?;
         let mut h = hc.borrow_mut();
         let n = mesh_draw(

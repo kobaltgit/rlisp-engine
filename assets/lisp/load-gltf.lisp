@@ -31,6 +31,8 @@
 ;;   (gltf-cache-clear!) — сброс кэша (hot reload).
 
 (define *gltf-cache* (make-table))
+(define *pose-cache-key* "")
+(define *pose-cache-val* #f)
 
 ;; ——— биты → числа ———
 
@@ -632,6 +634,18 @@
 ;; локальные матрицы из иерархии, каналы анимации замещают TRS-компоненту,
 ;; мир — рекурсивно от корней, сустав = мир × inverseBind
 (define (gltf-pose-skin model anim-name time)
+  ;; кэш на кадр: сцена синхронизирует фазу анимации и квантует время —
+  ;; все инстансы модели за кадр получают одну позу (5 лис = 1 расчёт)
+  (let ((ck (string-append anim-name ":"
+                           (number->string (floor (* time 8.0))))))
+    (if (string=? ck *pose-cache-key*)
+        *pose-cache-val*
+        (begin
+          (set! *pose-cache-key* ck)
+          (set! *pose-cache-val* (gltf-pose-skin-uncached model anim-name time))
+          *pose-cache-val*))))
+
+(define (gltf-pose-skin-uncached model anim-name time)
   ;; 1) замещения каналов анимации; 2) локальные матрицы (dotimes);
   ;; 3) мир узла — цепочкой родителей снизу вверх (без рекурсии);
   ;; 4) сустав = мир × inverseBind. Возврат: (jmat mesh-world)
