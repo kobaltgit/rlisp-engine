@@ -3122,6 +3122,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             &out,
             Some(&uv),
             None,
+            None, // нормали не используются (flat-шейдинг по граням)
             &seq,
             &model,
             &mvp,
