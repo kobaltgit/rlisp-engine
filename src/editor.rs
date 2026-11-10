@@ -53,6 +53,8 @@ pub struct Bridge {
     pub prefabs: Mutex<String>,
     /// Аудиосистема: доступ к микшеру и событиям для браузера
     pub audio: Mutex<Option<Arc<Mutex<crate::audio::AudioMixer>>>>,
+    /// Флаг запроса кадра браузером (для on-demand GPU readback)
+    pub frame_requested: AtomicBool,
 }
 
 impl Bridge {
@@ -77,6 +79,7 @@ impl Bridge {
             camera: Mutex::new("null".into()),
             prefabs: Mutex::new("null".into()),
             audio: Mutex::new(None),
+            frame_requested: AtomicBool::new(true),
         })
     }
 
@@ -240,6 +243,7 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             );
         }
         ("GET", "/frame.png") => {
+            bridge.frame_requested.store(true, Ordering::Relaxed);
             let fb = bridge.fb.lock().unwrap().clone();
             let (w, h) = *bridge.fb_wh.lock().unwrap();
             if w == 0 || fb.is_empty() {

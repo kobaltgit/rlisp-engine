@@ -74,14 +74,13 @@ tex_upload / tex_free / flush(fb, readback) -> (submit_ns, readback_ns)`.
 покрытые пиксели — под ними может быть результат программного 3D-конвейера.
 Так PNG/ASCII/редактор читают один и тот же fb при любом бэкенде.
 
-### Честно о покрытии этапа 1
+### Аппаратный 3D-конвейер на WebGPU
 
-- wgpu закрывает **2D-растр** (clear / fill-rect / blit / blit-tex /
-  present);
-- 3D-конвейер (`render3d.rs`: T&L, z-буфер, батчи) остаётся **программным**;
-  перенос батчей на GPU — этап 5 роадмапа;
-- критерий «`--wgpu` кратно быстрее» требует GPU-железа — см.
-  `docs/benchmark.md`.
+- В режиме `--wgpu` (фича `wgpu`) 3D-конвейер полностью перенесён на аппаратный GPU (`src/gpu_3d.rs`): T&L, аппаратный Z-буфер `Depth32Float`, Blinn-Phong, экспоненциальный туман и инстансированные батчи;
+- Полный обзор нововведения (от программного Flat Shading до аппаратного WebGPU с Phong и кэшированием): см. [docs/3d_pipeline_and_gpu.md](file:///d:/Projects/active/rlisp-engine/docs/3d_pipeline_and_gpu.md);
+- Подробная архитектура конвейера и руководство для разработчиков: см. [docs/wgpu_3d_pipeline.md](file:///d:/Projects/active/rlisp-engine/docs/wgpu_3d_pipeline.md);
+- Кэширование геометрии в VRAM (VBO/IBO) и On-Demand Readback для редактора: см. [docs/gpu_vbo_caching.md](file:///d:/Projects/active/rlisp-engine/docs/gpu_vbo_caching.md);
+- При отсутствии дискретного/интегрированного GPU-адаптера или без фичи сохраняется прозрачный откат на программный растр `Backend::Software`.
 
 ## Менеджер GPU-ресурсов
 

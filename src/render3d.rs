@@ -68,6 +68,8 @@ pub struct R3 {
     /// gpu3d-flush-alpha (сортировка far→near — художник-порядок для крон,
     /// воды, облаков).
     pub(crate) transq: Vec<TransTri>,
+    /// Режим затенения: false = flat (дефолт, ретро-стиль), true = smooth (сглаженный Фонг).
+    pub smooth: bool,
 }
 
 /// Треугольник прозрачной очереди: экранные вершины со ВСЕМИ атрибутами
@@ -109,6 +111,7 @@ impl R3 {
             fog: [0.7, 0.8, 0.9, 0.0],
             blend: 1.0,
             transq: Vec::new(),
+            smooth: false,
         }
     }
 
@@ -117,6 +120,22 @@ impl R3 {
             self.w = w;
             self.h = h;
             self.zbuf = vec![f32::INFINITY; w * h];
+        }
+    }
+
+    pub fn state(&self) -> crate::gpu_3d::R3State {
+        crate::gpu_3d::R3State {
+            light: self.light,
+            ambient: self.ambient,
+            diffuse: self.diffuse,
+            spec: self.spec,
+            shininess: self.shininess,
+            view: self.view,
+            tiling: self.tiling,
+            alpha_test: self.alpha_test,
+            fog: self.fog,
+            blend: self.blend,
+            smooth: self.smooth,
         }
     }
 }
@@ -213,7 +232,7 @@ fn dot3(a: &[f32; 3], b: &[f32; 3]) -> f32 {
 /// Атрибуты (u/w, 1/w, мир/w, a/w, rgb/w) линейны вдоль ребра → интерполируются
 /// тем же t. Мир/w нужен per-pixel half-vector блику, a/w и rgb/w — прозрачности
 /// и цветовым градиентам (вода, небо).
-fn clip_near6(poly: &[[f32; 14]], out: &mut Vec<[f32; 14]>) {
+fn clip_near6(poly: &[[f32; 17]], out: &mut Vec<[f32; 17]>) {
     out.clear();
     let n = poly.len();
     for i in 0..n {
@@ -228,8 +247,8 @@ fn clip_near6(poly: &[[f32; 14]], out: &mut Vec<[f32; 14]>) {
         }
         if a_in != b_in {
             let t = da / (da - db);
-            let mut v = [0.0f32; 14];
-            for k in 0..10 {
+            let mut v = [0.0f32; 17];
+            for k in 0..17 {
                 v[k] = a[k] + (b[k] - a[k]) * t;
             }
             out.push(v);
@@ -252,9 +271,12 @@ pub(crate) struct Vtx {
     rq: f32,  // r/w (этап 9: per-vertex цвет)
     gq: f32,  // g/w
     bq: f32,  // b/w
+    nxq: f32, // normal.x/w (сглаженный Фонг)
+    nyq: f32, // normal.y/w
+    nzq: f32, // normal.z/w
 }
 
-fn project6(c: &[f32; 14], w: usize, h: usize) -> Option<Vtx> {
+fn project6(c: &[f32; 17], w: usize, h: usize) -> Option<Vtx> {
     if c[3] <= 1e-6 {
         return None;
     }
@@ -275,6 +297,9 @@ fn project6(c: &[f32; 14], w: usize, h: usize) -> Option<Vtx> {
         rq: c[11],
         gq: c[12],
         bq: c[13],
+        nxq: c[14],
+        nyq: c[15],
+        nzq: c[16],
     })
 }
 
@@ -300,6 +325,9 @@ fn project(c: &[f32; 4], w: usize, h: usize) -> Option<Vtx> {
         rq: 0.0,
         gq: 0.0,
         bq: 0.0,
+        nxq: 0.0,
+        nyq: 0.0,
+        nzq: 0.0,
     })
 }
 
@@ -338,9 +366,11 @@ fn tex_lookup(hal: &Hal, id: i64) -> Result<Option<TexRef>, String> {
 /// (UV-атрибуты интерполируются отдельно — см. raster_tris/uvq).
 fn transform_all(
     pos: &[f32],
+    nrm: Option<&[f32]>,
     model: &[f32],
     mvp: &[f32],
     world: &mut Vec<f32>,
+    world_nrm: &mut Vec<f32>,
     clip: &mut Vec<f32>,
 ) {
     let n = pos.len() / 3;
@@ -348,6 +378,22 @@ fn transform_all(
     world.resize(n * 3, 0.0);
     clip.clear();
     clip.resize(n * 4, 0.0);
+    world_nrm.clear();
+    if let Some(normals) = nrm {
+        world_nrm.resize(n * 3, 0.0);
+        for i in 0..n {
+            let nx = normals[i * 3];
+            let ny = normals[i * 3 + 1];
+            let nz = normals[i * 3 + 2];
+            let wnx = model[0] * nx + model[1] * ny + model[2] * nz;
+            let wny = model[4] * nx + model[5] * ny + model[6] * nz;
+            let wnz = model[8] * nx + model[9] * ny + model[10] * nz;
+            let l = (wnx * wnx + wny * wny + wnz * wnz).sqrt().max(1e-9);
+            world_nrm[i * 3] = wnx / l;
+            world_nrm[i * 3 + 1] = wny / l;
+            world_nrm[i * 3 + 2] = wnz / l;
+        }
+    }
     for i in 0..n {
         let x = pos[i * 3];
         let y = pos[i * 3 + 1];
@@ -429,6 +475,7 @@ fn mesh_draw(
     pos: &[f32],
     uv: Option<&[f32]>,
     vca: Option<&[f32]>, // per-vertex rgba (gpu3d-mesh-vc)
+    nrm: Option<&[f32]>, // per-vertex normals (smooth shading)
     idx: &[f32],
     model: &[f32],
     mvp: &[f32],
@@ -438,9 +485,10 @@ fn mesh_draw(
     texid: i64,
     prim: Prim,
 ) -> Result<u64, String> {
-    // wgpu-режим: 3D-конвейер рисует в fb — сначала сбрасываем отложенный
-    // 2D-слой (порядок художника совпадает с программным растром)
-    let _ = hal.flush_gpu();
+    // wgpu-режим: 3D-конвейер рисует на GPU, сброс нужен только для софтверного растра
+    if !matches!(hal.backend, crate::gpu::Backend::Wgpu(_)) {
+        let _ = hal.flush_gpu(true);
+    }
     if pos.len() % 3 != 0 || pos.is_empty() {
         return Err("gpu3d: позиции — плоский массив xyz (длина кратна 3)".into());
     }
@@ -463,6 +511,15 @@ fn mesh_draw(
             ));
         }
     }
+    if let Some(normals) = nrm {
+        if normals.len() != n * 3 {
+            return Err(format!(
+                "gpu3d: normal — тройки на вершину ({}), вершин {}",
+                normals.len(),
+                n
+            ));
+        }
+    }
     if let Prim::Wire = prim {
         if idx.len() % 2 != 0 {
             return Err("gpu3d-wire: индексы — пары вершин (длина кратна 2)".into());
@@ -477,6 +534,25 @@ fn mesh_draw(
     if tex.is_some() && uv.is_none() {
         return Err("gpu3d: текстура без uv-массива".into());
     }
+    // wgpu-режим: 3D-конвейер рисует на GPU через аппаратный пайплайн
+    if let crate::gpu::Backend::Wgpu(gpu) = &mut hal.backend {
+        let r3_state = hal.r3.state();
+        let drawn = gpu.draw_mesh_3d(
+            pos,
+            uv,
+            vca,
+            nrm,
+            idx,
+            model,
+            mvp,
+            (r as f32, g as f32, b as f32),
+            texid,
+            matches!(prim, Prim::Wire),
+            &r3_state,
+        )?;
+        hal.r3.drawn += drawn;
+        return Ok(drawn);
+    }
     let (w, h) = (hal.w, hal.h);
     if hal.r3.zbuf.len() != w * h {
         hal.r3.reset(w, h);
@@ -484,8 +560,9 @@ fn mesh_draw(
     let Hal { fb, r3, .. } = &mut *hal;
 
     let mut world = Vec::with_capacity(n * 3);
+    let mut world_nrm = Vec::with_capacity(if nrm.is_some() { n * 3 } else { 0 });
     let mut clip = Vec::with_capacity(n * 4);
-    transform_all(pos, model, mvp, &mut world, &mut clip);
+    transform_all(pos, nrm, model, mvp, &mut world, &mut world_nrm, &mut clip);
 
     let light = {
         let l = r3.light;
@@ -559,6 +636,7 @@ fn mesh_draw(
             h,
             &clip,
             &world,
+            if nrm.is_some() { Some(&world_nrm) } else { None },
             uv,
             vca,
             idx,
@@ -586,17 +664,29 @@ pub(crate) fn batch_draw(
     hal: &mut Hal,
     pos: &[f32],
     uv: Option<&[f32]>,
+    nrm: Option<&[f32]>,
     idx: &[f32],
     insts: &[f32],
     mvp: &[f32],
     texid: i64,
 ) -> Result<u64, String> {
-    // wgpu-режим: сброс отложенного 2D-слоя перед программным 3D-батчем
-    let _ = hal.flush_gpu();
+    // wgpu-режим: сброс нужен только перед программным 3D-батчем
+    if !matches!(hal.backend, crate::gpu::Backend::Wgpu(_)) {
+        let _ = hal.flush_gpu(true);
+    }
     if pos.len() % 3 != 0 || pos.is_empty() {
         return Err("gpu3d-batch: позиции — плоский xyz".into());
     }
     let n = pos.len() / 3;
+    if let Some(normals) = nrm {
+        if normals.len() != n * 3 {
+            return Err(format!(
+                "gpu3d-batch: normal — тройки на вершину ({}), вершин {}",
+                normals.len(),
+                n
+            ));
+        }
+    }
     if idx.len() % 3 != 0 {
         return Err("gpu3d-batch: индексы — тройки вершин".into());
     }
@@ -617,6 +707,13 @@ pub(crate) fn batch_draw(
     if tex.is_some() && uv.is_none() {
         return Err("gpu3d-batch-tex: текстура без uv".into());
     }
+    // wgpu-режим: батч на GPU через аппаратный instancing
+    if let crate::gpu::Backend::Wgpu(gpu) = &mut hal.backend {
+        let r3_state = hal.r3.state();
+        let drawn = gpu.draw_batch_3d(pos, uv, nrm, idx, insts, mvp, texid, &r3_state)?;
+        hal.r3.drawn += drawn;
+        return Ok(drawn);
+    }
     let (w, h) = (hal.w, hal.h);
     if hal.r3.zbuf.len() != w * h {
         hal.r3.reset(w, h);
@@ -625,6 +722,7 @@ pub(crate) fn batch_draw(
 
     // единые буферы на все инстансы
     let mut world = Vec::with_capacity(k * n * 3);
+    let mut world_nrm = Vec::with_capacity(if nrm.is_some() { k * n * 3 } else { 0 });
     let mut clip = Vec::with_capacity(k * n * 4);
     let mut uvq: Vec<f32> = Vec::with_capacity(k * n * 2);
     let mut tint: Vec<f32> = Vec::with_capacity(k * n * 3);
@@ -645,6 +743,18 @@ pub(crate) fn batch_draw(
             world.push(wx);
             world.push(wy);
             world.push(wz);
+            if let Some(normals) = nrm {
+                let nx = normals[vi * 3];
+                let ny = normals[vi * 3 + 1];
+                let nz = normals[vi * 3 + 2];
+                let wnx = m[0] * nx + m[1] * ny + m[2] * nz;
+                let wny = m[4] * nx + m[5] * ny + m[6] * nz;
+                let wnz = m[8] * nx + m[9] * ny + m[10] * nz;
+                let l = (wnx * wnx + wny * wny + wnz * wnz).sqrt().max(1e-9);
+                world_nrm.push(wnx / l);
+                world_nrm.push(wny / l);
+                world_nrm.push(wnz / l);
+            }
             clip.push(mvp[0] * wx + mvp[1] * wy + mvp[2] * wz + mvp[3]);
             clip.push(mvp[4] * wx + mvp[5] * wy + mvp[6] * wz + mvp[7]);
             clip.push(mvp[8] * wx + mvp[9] * wy + mvp[10] * wz + mvp[11]);
@@ -677,6 +787,7 @@ pub(crate) fn batch_draw(
         h,
         &clip,
         &world,
+        if nrm.is_some() { Some(&world_nrm) } else { None },
         if uv.is_some() { Some(&uvq) } else { None },
         None,
         &idx_all,
@@ -703,7 +814,7 @@ pub(crate) fn flush_transparent(hal: &mut Hal) -> Result<u64, String> {
     if hal.r3.transq.is_empty() {
         return Ok(0);
     }
-    let _ = hal.flush_gpu();
+    let _ = hal.flush_gpu(true);
     let (w, h) = (hal.w, hal.h);
     if hal.r3.zbuf.len() != w * h {
         hal.r3.reset(w, h);
@@ -773,6 +884,7 @@ fn blend_tri(
         (ambient + diffuse * ndl.max(0.0)).clamp(0.0, 1.0)
     };
     let (p0, p1, p2) = (&t.pts[0], &t.pts[1], &t.pts[2]);
+    let has_smooth = r3.smooth && (p0.nxq.abs() + p0.nyq.abs() + p0.nzq.abs() > 1e-6);
     let (tw, th) = tex.map(|x| (x.w, x.h)).unwrap_or((0, 0));
 
     let minx = (p0.sx.min(p1.sx).min(p2.sx).floor() as i64).max(0);
@@ -803,6 +915,23 @@ fn blend_tri(
                     if iwp.abs() <= 1e-12 {
                         continue;
                     }
+                    let (pix_nnrm, pix_shade) = if has_smooth {
+                        let nx = ((w0 * p0.nxq + w1 * p1.nxq + w2 * p2.nxq) / sum) / iwp;
+                        let ny = ((w0 * p0.nyq + w1 * p1.nyq + w2 * p2.nyq) / sum) / iwp;
+                        let nz = ((w0 * p0.nzq + w1 * p1.nzq + w2 * p2.nzq) / sum) / iwp;
+                        let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+                        if nlen < 1e-9 {
+                            (nnrm, shade)
+                        } else {
+                            let inv_nlen = 1.0 / nlen;
+                            let norm = [nx * inv_nlen, ny * inv_nlen, nz * inv_nlen];
+                            let ndl = dot3(&norm, &light).abs();
+                            let sh = (ambient + diffuse * ndl.max(0.0)).clamp(0.0, 1.0);
+                            (norm, sh)
+                        }
+                    } else {
+                        (nnrm, shade)
+                    };
                     let s = if spec_on {
                         let wx = ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp;
                         let wy = ((w0 * p0.wyq + w1 * p1.wyq + w2 * p2.wyq) / sum) / iwp;
@@ -816,7 +945,7 @@ fn blend_tri(
                         ];
                         let hl = dot3(&hv, &hv).sqrt().max(1e-9);
                         spec_highlight(
-                            dot3(&nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
+                            dot3(&pix_nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
                             t.shininess,
                             t.spec,
                         )
@@ -835,7 +964,7 @@ fn blend_tri(
                     let rq = ((w0 * p0.rq + w1 * p1.rq + w2 * p2.rq) / sum) * f;
                     let gq = ((w0 * p0.gq + w1 * p1.gq + w2 * p2.gq) / sum) * f;
                     let bq = ((w0 * p0.bq + w1 * p1.bq + w2 * p2.bq) / sum) * f;
-                    let (mut c0, mut c1, mut c2) = (rq * shade, gq * shade, bq * shade);
+                    let (mut c0, mut c1, mut c2) = (rq * pix_shade, gq * pix_shade, bq * pix_shade);
                     let mut al =
                         (((w0 * p0.aq + w1 * p1.aq + w2 * p2.aq) / sum) * f).clamp(0.0, 1.0);
                     if let Some(tx) = tex {
@@ -893,6 +1022,7 @@ fn raster_tris(
     h: usize,
     clip: &[f32],
     world: &[f32],
+    world_nrm: Option<&[f32]>,
     uvq: Option<&[f32]>,
     vca: Option<&[f32]>, // per-vertex rgba (gpu3d-mesh-vc): n*4 f32
     idx: &[f32],
@@ -909,8 +1039,8 @@ fn raster_tris(
     let n = world.len() / 3;
     // скретч-буферы переиспользуются всеми треугольниками (без аллокаций
     // на треугольник в горячем цикле — цена тесселяции ревизии 4)
-    let mut poly_buf: Vec<[f32; 14]> = Vec::with_capacity(8);
-    let mut clip_buf: Vec<[f32; 14]> = Vec::with_capacity(8);
+    let mut poly_buf: Vec<[f32; 17]> = Vec::with_capacity(8);
+    let mut clip_buf: Vec<[f32; 17]> = Vec::with_capacity(8);
     let mut pts_buf: Vec<Vtx> = Vec::with_capacity(8);
     // кэш проекций: вершина регулярной сетки переиспользуется до 4 квад,
     // project6 с перспективным делением — самая дорогая часть цикла
@@ -926,7 +1056,7 @@ fn raster_tris(
             }
             tri[k] = vi as usize;
         }
-        // полигон в клип-пространстве + атрибуты u/w, v/w, 1/w, мир/w, a/w, rgb/w
+        // полигон в клип-пространстве + атрибуты u/w, v/w, 1/w, мир/w, a/w, rgb/w, nx/w, ny/w, nz/w
         let blend_base = if r3.blend > 0.0 {
             r3.blend.min(1.0)
         } else {
@@ -941,7 +1071,7 @@ fn raster_tris(
             let cw = clip[t * 4 + 3];
             let iw = if cw > 1e-6 { 1.0 / cw } else { 0.0 };
             // перспективно-корректные атрибуты: в полигон идут u/w, v/w,
-            // мировая позиция /w, альфа/w и rgb/w (аффинны на ребре)
+            // мировая позиция /w, альфа/w, rgb/w и нормали/w (аффинны на ребре)
             let (uq, vq) = if let Some(u) = uvq {
                 (u[t * 2] * iw, u[t * 2 + 1] * iw)
             } else {
@@ -951,6 +1081,11 @@ fn raster_tris(
                 (vc[t * 4 + 3], vc[t * 4], vc[t * 4 + 1], vc[t * 4 + 2])
             } else {
                 (blend_base, base_rgb[0], base_rgb[1], base_rgb[2])
+            };
+            let (nxq, nyq, nzq) = if let Some(wn) = world_nrm {
+                (wn[t * 3] * iw, wn[t * 3 + 1] * iw, wn[t * 3 + 2] * iw)
+            } else {
+                (0.0, 0.0, 0.0)
             };
             poly_buf.push([
                 clip[t * 4],
@@ -967,10 +1102,13 @@ fn raster_tris(
                 rr * iw,
                 gg * iw,
                 bb * iw,
+                nxq,
+                nyq,
+                nzq,
             ]);
         }
 
-        let poly: &[[f32; 14]] = if poly_buf.iter().any(|v| v[3] < 1e-6) {
+        let poly: &[[f32; 17]] = if poly_buf.iter().any(|v| v[3] < 1e-6) {
             clip_near6(&poly_buf, &mut clip_buf);
             if clip_buf.len() < 3 {
                 *culled += 1;
@@ -1023,6 +1161,7 @@ fn raster_tris(
         let fog_snap = r3.fog;
         let alpha_on = r3.alpha_test > 0.0;
         let alpha_thr = r3.alpha_test;
+        let smooth_shading = r3.smooth && world_nrm.is_some();
         let (tu, tv) = (r3.tiling[0], r3.tiling[1]);
 
         // вентилятор: (0, k, k+1)
@@ -1156,7 +1295,28 @@ fn raster_tris(
                                 }
                                 continue;
                             }
-                            // блик Blinn-Phong (этап 7): half-vector на
+                            // сглаженные нормали и шейдинг Фонга (этап: per-pixel normal)
+                            let (pix_nnrm, pix_shade) = if smooth_shading {
+                                let nx = ((w0 * p0.nxq + w1 * p1.nxq + w2 * p2.nxq) / sum) / iwp;
+                                let ny = ((w0 * p0.nyq + w1 * p1.nyq + w2 * p2.nyq) / sum) / iwp;
+                                let nz = ((w0 * p0.nzq + w1 * p1.nzq + w2 * p2.nzq) / sum) / iwp;
+                                let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+                                if nlen < 1e-9 {
+                                    (nnrm, shade)
+                                } else {
+                                    let inv_nlen = 1.0 / nlen;
+                                    let norm = [nx * inv_nlen, ny * inv_nlen, nz * inv_nlen];
+                                    let mut ndl = dot3(&norm, light);
+                                    if blend_pass && ndl < 0.0 {
+                                        ndl = -ndl;
+                                    }
+                                    let sh = (ambient + diffuse * ndl.max(0.0)).clamp(0.0, 1.0);
+                                    (norm, sh)
+                                }
+                            } else {
+                                (nnrm, shade)
+                            };
+                            // блик Blinn-Phong: half-vector на
                             // перспектива-корректной мировой позиции пикселя
                             let s = if spec_on {
                                 let wx = ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp;
@@ -1171,7 +1331,7 @@ fn raster_tris(
                                 ];
                                 let hl = dot3(&hv, &hv).sqrt().max(1e-9);
                                 spec_highlight(
-                                    dot3(&nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
+                                    dot3(&pix_nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
                                     shininess,
                                     spec,
                                 )
@@ -1186,15 +1346,15 @@ fn raster_tris(
                                 0.0
                             };
                             // базовый цвет пикселя: per-vertex градиент (этап 9)
-                            // или равномерный цвет грани × Lambert
+                            // или равномерный цвет грани × Lambert / Phong
                             let (mut c0, mut c1, mut c2) = if !vc_rgb {
                                 let f = 1.0 / iwp;
                                 let rq = ((w0 * p0.rq + w1 * p1.rq + w2 * p2.rq) / sum) * f;
                                 let gq = ((w0 * p0.gq + w1 * p1.gq + w2 * p2.gq) / sum) * f;
                                 let bq = ((w0 * p0.bq + w1 * p1.bq + w2 * p2.bq) / sum) * f;
-                                (rq * shade, gq * shade, bq * shade)
+                                (rq * pix_shade, gq * pix_shade, bq * pix_shade)
                             } else {
-                                (tr * shade, tg * shade, tb * shade)
+                                (tr * pix_shade, tg * pix_shade, tb * pix_shade)
                             };
                             let mut al = if blend_pass {
                                 let f = 1.0 / iwp;
@@ -1314,16 +1474,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let g = col(num_val(&args[1])?);
         let b = col(num_val(&args[2])?);
         let mut h = hc.borrow_mut();
-        let (w, hh) = (h.w, h.h);
-        // wgpu-режим: 3D-очистка — программная, но сначала сбрасываем отложенный
-        // 2D-слой, чтобы он не «всплыл» посреди 3D-кадра
-        let _ = h.flush_gpu();
-        h.r3.reset(w, hh);
-        h.r3.transq.clear();
-        h.fill_all(r, g, b);
-        h.r3.zbuf.fill(f32::INFINITY);
-        h.r3.drawn = 0;
-        h.r3.culled = 0;
+        h.clear_3d(r, g, b);
         Ok(Value::Nil)
     });
 
@@ -1420,6 +1571,10 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         t.insert("alpha-test".into(), Value::Float(r3.alpha_test as f64));
         t.insert("blend".into(), Value::Float(r3.blend as f64));
         t.insert(
+            "shading".into(),
+            Value::Sym(if r3.smooth { "smooth".into() } else { "flat".into() }),
+        );
+        t.insert(
             "fog".into(),
             Value::List(vec![
                 Value::Float(r3.fog[0] as f64),
@@ -1441,6 +1596,70 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let mut h = hc.borrow_mut();
         h.r3.blend = num_val(&args[0])?.clamp(0.0, 1.0) as f32;
         Ok(Value::Nil)
+    });
+
+    // режим шейдинга: (gpu3d-shading ['flat | 'smooth]) —
+    // по умолчанию 'flat (ретро-стиль), 'smooth (сглаженный Фонг)
+    let hc = hal.clone();
+    def(env, "gpu3d-shading", move |args| {
+        let mut h = hc.borrow_mut();
+        if args.is_empty() {
+            let s = if h.r3.smooth { "smooth" } else { "flat" };
+            return Ok(Value::Sym(s.into()));
+        }
+        let smooth = match &args[0] {
+            Value::Sym(s) => s == "smooth",
+            Value::Str(s) => s == "smooth",
+            Value::Bool(b) => *b,
+            _ => false,
+        };
+        h.r3.smooth = smooth;
+        Ok(Value::Sym(if smooth { "smooth" } else { "flat" }.into()))
+    });
+
+    // расчёт сглаженных нормалей вершин сетки (усреднение нормалей смежных треугольников)
+    def(env, "gpu3d-compute-normals", |args| {
+        need(args, 2)?;
+        let pos = to_f32s(&args[0])?;
+        let idx = to_f32s(&args[1])?;
+        if pos.len() % 3 != 0 || pos.is_empty() {
+            return Err("gpu3d-compute-normals: pos должен быть массивом xyz".into());
+        }
+        if idx.len() % 3 != 0 {
+            return Err("gpu3d-compute-normals: idx должен быть массивом треугольников".into());
+        }
+        let n = pos.len() / 3;
+        let mut nrm = vec![0.0f32; n * 3];
+        for tri in idx.chunks_exact(3) {
+            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            if i0 < n && i1 < n && i2 < n {
+                let v0 = [pos[i0 * 3], pos[i0 * 3 + 1], pos[i0 * 3 + 2]];
+                let v1 = [pos[i1 * 3], pos[i1 * 3 + 1], pos[i1 * 3 + 2]];
+                let v2 = [pos[i2 * 3], pos[i2 * 3 + 1], pos[i2 * 3 + 2]];
+                let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+                let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+                let fnrm = cross3(&e1, &e2);
+                for &vi in &[i0, i1, i2] {
+                    nrm[vi * 3] += fnrm[0];
+                    nrm[vi * 3 + 1] += fnrm[1];
+                    nrm[vi * 3 + 2] += fnrm[2];
+                }
+            }
+        }
+        for i in 0..n {
+            let nx = nrm[i * 3];
+            let ny = nrm[i * 3 + 1];
+            let nz = nrm[i * 3 + 2];
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            if len > 1e-9 {
+                nrm[i * 3] /= len;
+                nrm[i * 3 + 1] /= len;
+                nrm[i * 3 + 2] /= len;
+            } else {
+                nrm[i * 3 + 1] = 1.0;
+            }
+        }
+        Ok(Value::F32Vec(Rc::new(RefCell::new(nrm))))
     });
 
     // дренаж прозрачной очереди: сорт far→near + блендинг
@@ -1479,6 +1698,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             &pos,
             Some(&uv),
             Some(&rgba),
+            None,
             &idx,
             &model,
             &mvp,
@@ -1493,7 +1713,10 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
 
     let hc = hal.clone();
     def(env, "gpu3d-mesh", move |args| {
-        need(args, 7)?;
+        let n = args.len();
+        if n != 7 && n != 8 {
+            return Err("gpu3d-mesh: (pos idx model mvp r g b [nrm])".into());
+        }
         let pos = to_f32s(&args[0])?;
         let idx = to_f32s(&args[1])?;
         let model = to_f32s(&args[2])?;
@@ -1501,12 +1724,18 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let r = num_val(&args[4])?;
         let g = num_val(&args[5])?;
         let b = num_val(&args[6])?;
+        let nrm = if n == 8 {
+            Some(to_f32s(&args[7])?)
+        } else {
+            None
+        };
         let mut h = hc.borrow_mut();
         let n = mesh_draw(
             &mut h,
             &pos,
             None,
             None,
+            nrm.as_deref(),
             &idx,
             &model,
             &mvp,
@@ -1519,10 +1748,13 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Int(n as i64))
     });
 
-    // текстурированный mesh: (gpu3d-mesh-tex pos uv idx tex model mvp r g b)
+    // текстурированный mesh: (gpu3d-mesh-tex pos uv idx tex model mvp r g b [nrm])
     let hc = hal.clone();
     def(env, "gpu3d-mesh-tex", move |args| {
-        need(args, 9)?;
+        let n = args.len();
+        if n != 9 && n != 10 {
+            return Err("gpu3d-mesh-tex: (pos uv idx tex model mvp r g b [nrm])".into());
+        }
         let pos = to_f32s(&args[0])?;
         let uv = to_f32s(&args[1])?;
         let idx = to_f32s(&args[2])?;
@@ -1532,6 +1764,11 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let r = num_val(&args[6])?;
         let g = num_val(&args[7])?;
         let b = num_val(&args[8])?;
+        let nrm = if n == 10 {
+            Some(to_f32s(&args[9])?)
+        } else {
+            None
+        };
         check_tex_uv(Some(&uv), pos.len() / 3)?;
         let mut h = hc.borrow_mut();
         let n = mesh_draw(
@@ -1539,6 +1776,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             &pos,
             Some(&uv),
             None,
+            nrm.as_deref(),
             &idx,
             &model,
             &mvp,
@@ -1551,32 +1789,48 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Int(n as i64))
     });
 
-    // батч: (gpu3d-batch pos idx insts mvp) — цвет/трансформ в инстансах
+    // батч: (gpu3d-batch pos idx insts mvp [nrm]) — цвет/трансформ в инстансах
     let hc = hal.clone();
     def(env, "gpu3d-batch", move |args| {
-        need(args, 4)?;
+        let n = args.len();
+        if n != 4 && n != 5 {
+            return Err("gpu3d-batch: (pos idx insts mvp [nrm])".into());
+        }
         let pos = to_f32s(&args[0])?;
         let idx = to_f32s(&args[1])?;
         let insts = to_f32s(&args[2])?;
         let mvp = to_f32s(&args[3])?;
+        let nrm = if n == 5 {
+            Some(to_f32s(&args[4])?)
+        } else {
+            None
+        };
         let mut h = hc.borrow_mut();
-        let n = batch_draw(&mut h, &pos, None, &idx, &insts, &mvp, 0)?;
+        let n = batch_draw(&mut h, &pos, None, nrm.as_deref(), &idx, &insts, &mvp, 0)?;
         Ok(Value::Int(n as i64))
     });
 
-    // текстурный батч: (gpu3d-batch-tex pos uv idx tex insts mvp)
+    // текстурный батч: (gpu3d-batch-tex pos uv idx tex insts mvp [nrm])
     let hc = hal.clone();
     def(env, "gpu3d-batch-tex", move |args| {
-        need(args, 6)?;
+        let n = args.len();
+        if n != 6 && n != 7 {
+            return Err("gpu3d-batch-tex: (pos uv idx tex insts mvp [nrm])".into());
+        }
         let pos = to_f32s(&args[0])?;
         let uv = to_f32s(&args[1])?;
         let idx = to_f32s(&args[2])?;
         let texid = crate::interp::int_val(&args[3])?;
         let insts = to_f32s(&args[4])?;
         let mvp = to_f32s(&args[5])?;
+        let nrm = if n == 7 {
+            Some(to_f32s(&args[6])?)
+        } else {
+            None
+        };
         check_tex_uv(Some(&uv), pos.len() / 3)?;
         let mut h = hc.borrow_mut();
-        let n = batch_draw(&mut h, &pos, Some(&uv), &idx, &insts, &mvp, texid)?;
+        let n = batch_draw(&mut h, &pos, Some(&uv), nrm.as_deref(), &idx, &insts, &mvp, texid)?;
         Ok(Value::Int(n as i64))
     });
 
@@ -1594,6 +1848,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let n = mesh_draw(
             &mut h,
             &pos,
+            None,
             None,
             None,
             &idx,
@@ -1753,6 +2008,7 @@ mod tests {
             &pos,
             None,
             None,
+            None,
             &idx,
             model,
             mvp,
@@ -1774,6 +2030,7 @@ mod tests {
         mesh_draw(
             hal,
             &pos,
+            None,
             None,
             None,
             &idx,
@@ -1864,6 +2121,7 @@ mod tests {
             &pos,
             None,
             Some(&rgba),
+            None,
             &idx,
             model,
             mvp,
@@ -1934,6 +2192,7 @@ mod tests {
             hal,
             &pos,
             Some(uv),
+            None,
             None,
             &idx,
             model,
@@ -2163,5 +2422,88 @@ mod tests {
         assert_eq!(пиксель(&hal2, 4, 4), [255, 0, 0, 255]);
         // шов стыкуется: u≈0.9375 → 1.875 → fract 0.875 → столбец 3 (белый)
         assert_eq!(пиксель(&hal2, 7, 4), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn smooth_normals() {
+        // Квадрат во весь экран (8x8) на z=0.5:
+        // Вершины:
+        // 0: (-1, -1), 1: (1, -1), 2: (1, 1), 3: (-1, 1)
+        // Нормали вершин: левые вершины (0, 3) смотрят вбок (-1, 0, 0),
+        // правые вершины (1, 2) смотрят вперед (0, 0, 1).
+        // Источник света прямо спереди: light = [0, 0, 1].
+        // ambient = 0.2, diffuse = 0.8.
+        let pos = [-1.0f32, -1.0, 0.5, 1.0, -1.0, 0.5, 1.0, 1.0, 0.5, -1.0, 1.0, 0.5];
+        let nrm = [
+            -1.0f32, 0.0, 0.0, // v0
+             0.0, 0.0, 1.0,    // v1
+             0.0, 0.0, 1.0,    // v2
+            -1.0, 0.0, 0.0,    // v3
+        ];
+        let idx = [0.0f32, 1.0, 2.0, 0.0, 2.0, 3.0];
+        let mm = ед_матрицы();
+        let (model, mvp) = (&mm[0..16], &mm[16..32]);
+
+        // 1. В режиме flat: нормаль треугольников берётся от плоскости грани (0, 0, 1),
+        // поэтому ndl = 1.0 везде, цвет равномерный 0.2 + 0.8*1.0 = 1.0 (255)
+        let mut hal_flat = Hal::new(OutputMode::Silent, 8, 8);
+        hal_flat.fill_all(0, 0, 0);
+        сброс_света(&mut hal_flat);
+        hal_flat.r3.light = [0.0, 0.0, 1.0];
+        hal_flat.r3.ambient = 0.2;
+        hal_flat.r3.diffuse = 0.8;
+        hal_flat.r3.smooth = false;
+        mesh_draw(
+            &mut hal_flat,
+            &pos,
+            None,
+            None,
+            Some(&nrm),
+            &idx,
+            model,
+            mvp,
+            1.0,
+            1.0,
+            1.0,
+            0,
+            Prim::Tri,
+        )
+        .unwrap();
+        let left_flat = пиксель(&hal_flat, 0, 4);
+        let right_flat = пиксель(&hal_flat, 7, 4);
+        assert_eq!(left_flat[0], 255);
+        assert_eq!(right_flat[0], 255);
+
+        // 2. В режиме smooth: нормали интерполируются!
+        // На левом краю нормаль близка к (-1, 0, 0) -> N·L ≈ 0 -> цвет ≈ ambient (0.2 -> ~51)
+        // На правом краю нормаль близка к (0, 0, 1) -> N·L ≈ 1 -> цвет ≈ ambient + diffuse (1.0 -> 255)
+        let mut hal_smooth = Hal::new(OutputMode::Silent, 8, 8);
+        hal_smooth.fill_all(0, 0, 0);
+        сброс_света(&mut hal_smooth);
+        hal_smooth.r3.light = [0.0, 0.0, 1.0];
+        hal_smooth.r3.ambient = 0.2;
+        hal_smooth.r3.diffuse = 0.8;
+        hal_smooth.r3.smooth = true;
+        mesh_draw(
+            &mut hal_smooth,
+            &pos,
+            None,
+            None,
+            Some(&nrm),
+            &idx,
+            model,
+            mvp,
+            1.0,
+            1.0,
+            1.0,
+            0,
+            Prim::Tri,
+        )
+        .unwrap();
+        let left_smooth = пиксель(&hal_smooth, 0, 4);
+        let right_smooth = пиксель(&hal_smooth, 7, 4);
+        assert!(left_smooth[0] < right_smooth[0], "левый край ({}) должен быть темнее правого ({})", left_smooth[0], right_smooth[0]);
+        assert!(left_smooth[0] < 120, "левый край должен иметь низкую освещенность: {}", left_smooth[0]);
+        assert_eq!(right_smooth[0], 255, "правый край освещен полностью: {}", right_smooth[0]);
     }
 }

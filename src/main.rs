@@ -10,6 +10,7 @@ mod audio;
 mod editor;
 mod gc;
 mod gpu;
+mod gpu_3d;
 mod hal;
 mod interp;
 #[cfg(feature = "jit")]
@@ -536,7 +537,7 @@ fn bench_frame_ops(hal: &mut Hal, sprite: &[u8], frames: usize) -> (f64, f64, f6
         for i in 0..4i64 {
             let _ = hal.blit_tex(1, i * 40, i * 40, 2.0, [1.0, 1.0, 1.0]);
         }
-        let (s, r) = hal.flush_gpu();
+        let (s, r) = hal.flush_gpu(true);
         sub += s;
         rb += r;
     }
@@ -862,7 +863,7 @@ fn bench_3d_shading() -> Result<(), String> {
         hal.r3.zbuf.fill(f32::INFINITY);
         hal.r3.drawn = 0;
         hal.r3.culled = 0;
-        render3d::batch_draw(hal, &s.pos, Some(&s.uv), &s.idx, &s.insts, &s.mvp, 1)
+        render3d::batch_draw(hal, &s.pos, Some(&s.uv), None, &s.idx, &s.insts, &s.mvp, 1)
     };
     let замер = |hal: &mut Hal, метка: &str, s: &Сцена3d| -> Result<f64, String> {
         // прогрев без замера (прогрев кэша/веток)
@@ -1255,6 +1256,13 @@ fn run_engine(args: &Args) -> Result<(), String> {
             d
         };
 
+        let need_readback = if let Some(b) = &bridge {
+            frames <= 1 || b.frame_requested.swap(false, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            false
+        };
+        halrc.borrow_mut().readback_requested = need_readback;
+
         // кадр: update(dt) → draw() → frame-end() (в паузе редактора — пропуск)
         if !editor_skip {
             let g = *cell.borrow();
@@ -1293,10 +1301,15 @@ fn run_engine(args: &Args) -> Result<(), String> {
         if let Some(b) = &bridge {
             {
                 let mut hal = halrc.borrow_mut();
-                // wgpu-режим: живой вид редактора читает fb — досылаем GPU-слой
-                let _ = hal.flush_gpu();
-                *b.fb.lock().unwrap() = hal.fb.clone();
-                *b.fb_wh.lock().unwrap() = (hal.w, hal.h);
+                if hal.readback_requested {
+                    // Если (gpu-present) не вызывался из Lisp — досылаем с readback
+                    let _ = hal.flush_gpu(need_readback);
+                    hal.readback_requested = false;
+                }
+                if need_readback {
+                    *b.fb.lock().unwrap() = hal.fb.clone();
+                    *b.fb_wh.lock().unwrap() = (hal.w, hal.h);
+                }
                 b.drawcalls
                     .store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
             }

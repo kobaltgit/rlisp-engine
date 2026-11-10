@@ -244,11 +244,11 @@
 (defmaterial 'трава  ':tiling '(6 6))
 (defmaterial 'камень ':tiling '(2 2) ':spec 0.18 ':shininess 26)
 (defmaterial 'дно    ':tiling '(4 4))
-(defmaterial 'кора   ':tiling '(2 3))
+(defmaterial 'кора   ':tiling '(2 3) ':shading 'smooth)
 (defmaterial 'листва ':tiling '(1 1))
 (defmaterial 'палма  ':tiling '(1 1))
 (defmaterial 'вода   ':spec 0.85 ':shininess 26)
-(defmaterial 'глинт  ':spec 0.4 ':shininess 40)
+(defmaterial 'глинт  ':spec 0.4 ':shininess 40 ':shading 'smooth)
 
 ;; ——— широколиственные деревья: ствол + крона из скрещенных квадрантов
 ;; с МЯГКОЙ листвой (alpha-blend, без жёсткого cutout) ———
@@ -363,7 +363,7 @@
 ;; меш (1 draw вместо батча кубов); UV: u — обхват, v — высота, tiling
 ;; материала 'кора (2 3) даёт 2 обхвата и 3 повтора по стволу
 (define (palm-cyl-mesh)
-  (let ((pos '()) (uv '()) (idx '()) (vi 0))
+  (let ((pos '()) (uv '()) (nrm '()) (idx '()) (vi 0))
     (define (rr tt) (- 0.21 (* 0.11 tt)))
     (dotimes (k *palm-n*)
       (let* ((p (palm-pos k))
@@ -383,6 +383,9 @@
                       (append pos
                               (list (+ cx (* r (cos aa))) cy
                                     (+ cz (* r (sin aa))))))
+                (set! nrm
+                      (append nrm
+                              (list (cos aa) 0.0 (sin aa))))
                 (set! uv (append uv (list (* si 0.125) tt)))))))
         (dotimes (ri 8)
           (dotimes (si 8)
@@ -391,7 +394,7 @@
                    (c (+ a 8)) (d (+ b 8)))
               (set! idx (append idx (list a c b  b c d))))))
         (set! vi (+ vi 72))))
-    (list (f32-from-list pos) (f32-from-list uv) (f32-from-list idx))))
+    (list (f32-from-list pos) (f32-from-list uv) (f32-from-list idx) (f32-from-list nrm))))
 (define *ptrunk* (palm-cyl-mesh))
 
 ;; листья: локальный квад вдоль +x, roll (Rz) топит его вниз, yaw раскладывает
@@ -749,7 +752,7 @@
                     *tex-leaf* *crown-cache* mvp 'листва)
     ;; пальмы: ствол (opaque) + листья (blend, ветер)
     (gpu3d-alpha-blend 1.0)
-    (draw-mesh-tex (list (car *ptrunk*) (caddr *ptrunk*))
+    (draw-mesh-tex (list (car *ptrunk*) (caddr *ptrunk*) (cadddr *ptrunk*))
                    (cadr *ptrunk*) *tex-bark* (mat-identity) mvp
                    (list 1 1 1) 'кора)
     (gpu3d-alpha-blend 0.98)
@@ -789,12 +792,12 @@
              6 21 1 (list 0.7 0.9 0.6)))
 
 (define (refresh-caches!)
-  (if (= 0 (mod *frame* 2))
+  (if (= 0 (mod *frame* 4))
       (begin
         (set! *crown-cache* (crown-insts))
         (set! *frond-cache* (palm-frond-insts)))
       #f)
-  (if (= 0 (mod *frame* 6))
+  (if (= 0 (mod *frame* 12))
       (set! *cloud-cache* (cloud-insts))
       #f)
   #t)
@@ -814,9 +817,8 @@
   (if (= 0 (mod *frame* 4))
       (update-water!)
       #f)
-  ;; цвет/альфа воды (френель/пена) — каждый 8-й кадр (френель меняется
-  ;; медленно: камера орбитит 0.1 рад/с; честно отражено в LIMITATIONS)
-  (if (= 0 (mod *frame* 4))
+  ;; цвет/альфа воды (френель/пена) — каждый 32-й кадр (камера орбитит 0.1 рад/с: ~2.8° за полсекунды)
+  (if (= 0 (mod *frame* 32))
       (update-water-vc (list (* 20.5 (cos (* *t* 0.10)))
                              9.6
                              (* 20.5 (sin (* *t* 0.10)))))

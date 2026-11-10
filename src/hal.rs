@@ -57,6 +57,7 @@ pub struct Hal {
     /// Накопленное время GPU: (submit, readback) в нс — для --bench
     pub gpu_submit_ns: u128,
     pub gpu_readback_ns: u128,
+    pub readback_requested: bool,
     pub audio: Arc<Mutex<crate::audio::AudioMixer>>,
     pub audio_device: Option<crate::audio::NativeAudioDevice>,
 }
@@ -92,6 +93,7 @@ impl Hal {
             res: GpuResources::default(),
             gpu_submit_ns: 0,
             gpu_readback_ns: 0,
+            readback_requested: true,
             audio,
             audio_device,
         };
@@ -108,6 +110,21 @@ impl Hal {
             return;
         }
         self.fill_all(r, g, b);
+    }
+
+    /// 3D-очистка: у software — fb + zbuf, у wgpu — аппаратная очистка color + depth
+    pub fn clear_3d(&mut self, r: u8, g: u8, b: u8) {
+        self.r3.reset(self.w, self.h);
+        self.r3.transq.clear();
+        self.r3.blend = 1.0;
+        self.r3.drawn = 0;
+        self.r3.culled = 0;
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.clear_3d(r, g, b);
+            return;
+        }
+        self.fill_all(r, g, b);
+        self.r3.zbuf.fill(f32::INFINITY);
     }
 
     pub fn fill_all(&mut self, r: u8, g: u8, b: u8) {
@@ -230,15 +247,15 @@ impl Hal {
         Ok(())
     }
 
-    /// wgpu: дослать кадр на GPU и скомпозитить его в fb (PNG/ASCII/редактор
-    /// читают fb — путь вывода не меняется). Software: no-op.
+    /// wgpu: дослать кадр на GPU и при readback=true скомпозитить его в fb
+    /// (PNG/ASCII/редактор читают fb — путь вывода не меняется). Software: no-op.
     /// Возвращает (submit_ns, readback_ns) — для профилирования.
-    pub fn flush_gpu(&mut self) -> (u128, u128) {
+    pub fn flush_gpu(&mut self, readback: bool) -> (u128, u128) {
         // swap, чтобы borrow бэкенда не пересекался с &mut fb
         match std::mem::replace(&mut self.backend, Backend::Software) {
             Backend::Wgpu(mut b) => {
                 let (w, h) = (self.w, self.h);
-                let t = b.flush(&mut self.fb, w, h, true);
+                let t = b.flush(&mut self.fb, w, h, readback);
                 self.gpu_submit_ns += t.0;
                 self.gpu_readback_ns += t.1;
                 self.backend = Backend::Wgpu(b);
@@ -297,6 +314,7 @@ impl Hal {
     pub fn invalidate_textures_except(&mut self, keep: &[i64]) -> usize {
         let freed = self.res.invalidate_except(keep);
         if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.clear_mesh_cache();
             for id in 1..=self.tex.len() as i64 {
                 if !keep.contains(&id) {
                     gpu.tex_free(id);
@@ -566,8 +584,10 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         use std::io::Write;
         let frame = {
             let mut hal = h.borrow_mut();
-            // wgpu: досылаем отложенные 2D-команды в fb ДО вывода кадра
-            let _ = hal.flush_gpu();
+            let need_rb = hal.readback_requested || !matches!(&hal.out, OutputMode::Silent);
+            hal.readback_requested = false;
+            // wgpu: досылаем отложенные 2D-команды в fb ДО вывода кадра (при Silent — без блокировки readback)
+            let _ = hal.flush_gpu(need_rb);
             hal.frame += 1;
             hal.frame
         };
@@ -595,7 +615,7 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         let p = resolve_path(&str_val(&args[0]), std::path::Path::new("."));
         let mut hal = h.borrow_mut();
         // MCP/скрипты: перед снимком досылаем GPU-слой в fb
-        let _ = hal.flush_gpu();
+        let _ = hal.flush_gpu(true);
         png::write_png(&p, &hal.fb, hal.w, hal.h)?;
         Ok(Value::Bool(true))
     });
@@ -1127,7 +1147,7 @@ mod tests {
         );
         // без flush — no-op
         let fb_before = hal.fb.clone();
-        let (sub, rb) = hal.flush_gpu();
+        let (sub, rb) = hal.flush_gpu(true);
         assert_eq!((sub, rb), (0, 0));
         assert_eq!(hal.fb, fb_before);
     }

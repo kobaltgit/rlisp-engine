@@ -5,6 +5,7 @@
 ;;   :spec       0..1 — сила блика Blinn-Phong (0 = чистый Lambert)
 ;;   :shininess  показатель блика: больше — пятно уже (дефолт 32)
 ;;   :alpha-test 0..1 — порог cutout: тексели с alpha < порога отбрасываются
+;;   :shading    'flat | 'smooth — режим затенения (дефолт 'flat)
 ;; Состояние «GPU» — машина состояний (как fixed-function): use-material!
 ;; применяет свойства, material-reset! возвращает нейтральные значения.
 ;; Туман (gpu3d-fog) — свойство СЦЕНЫ, не материала: ставится отдельно.
@@ -56,6 +57,8 @@
                 (gpu3d-mat-tiling 1 1)))
           ;; cutout: 0 = выкл
           (gpu3d-alpha-test (table-get m ':alpha-test 0))
+          ;; затенение: :shading ('smooth или 'flat, по умолчанию 'flat)
+          (gpu3d-shading (table-get m ':shading 'flat))
           ;; блик поверх текущего света; нет :spec → чистый Lambert
           (let ((st (gpu3d-state)))
             (let ((l (table-get st 'light)))
@@ -73,6 +76,7 @@
 (define (material-reset!)
   (gpu3d-mat-tiling 1 1)
   (gpu3d-alpha-test 0)
+  (gpu3d-shading 'flat)
   (let ((st (gpu3d-state)))
     (let ((l (table-get st 'light)))
       (gpu3d-light (car l) (cadr l) (caddr l)
