@@ -17,6 +17,7 @@
 (defpersistent *player* (make-table))
 (defpersistent *enemies* (make-table))
 (defpersistent *pylons* (make-table))   ; этап 6: пропсы, спавнятся редактором
+(defpersistent *lights* (make-table))   ; точечные источники света для редактора
 (defpersistent *bullets* '())
 (defpersistent *fx* '())
 (defpersistent *game-over* #f)
@@ -114,6 +115,24 @@
       (table-set! p 'kind 'pylon)
       (table-set! *pylons* id p))
     id))
+
+;; ——— точечный свет: динамические источники для drag-n-drop редактора ———
+(define (spawn-light x y z r g b radius intensity)
+  (let ((id *next-id*))
+    (set! *next-id* (+ id 1))
+    (let ((l (make-table)))
+      (table-set! l 'x x)
+      (table-set! l 'y y)
+      (table-set! l 'z z)
+      (table-set! l 'r r)
+      (table-set! l 'g g)
+      (table-set! l 'b b)
+      (table-set! l 'radius radius)
+      (table-set! l 'intensity intensity)
+      (table-set! l 'kind 'light)
+      (table-set! *lights* (number->string id) l)
+      (table-set! *lights* id l)
+      id)))
 
 ;; ——— стрельба: автоприцел по ближайшему врагу ———
 (define (nearest-enemy-3d)
@@ -353,8 +372,20 @@
          (mvp (camera-mvp (list (+ pxv (* 4 (sin (* t 0.25)))) 22 (+ pzv 27))
                           (list pxv 0 (- pzv 5))
                           1.0)))
-    ;; — этап 4: динамические точечные источники света от пуль —
+    ;; — этап 4: динамические точечные источники света (пользовательские + пули) —
     (clear-point-lights)
+    (for-each
+     (lambda (entry)
+       (let ((l (cadr entry)))
+         (add-point-light (table-get l 'x 0.0)
+                          (table-get l 'y 3.0)
+                          (table-get l 'z 0.0)
+                          (table-get l 'r 1.0)
+                          (table-get l 'g 0.85)
+                          (table-get l 'b 0.4)
+                          (table-get l 'radius 15.0)
+                          (table-get l 'intensity 1.5))))
+     (table-entries *lights*))
     (for-each
      (lambda (b)
        (add-point-light (table-get b 'x 0.0) 1.4 (table-get b 'z 0.0)
@@ -426,28 +457,38 @@
      (if *game-over* (draw-game-over) #f))))
 
 ;; ——— мост редактора/MCP (v0.3 + этап 6): сцена и операции над сущностями ———
-;; сущность по id: враг или пилон (id общие, из одного счётчика *next-id*)
+;; сущность по id: враг, пилон или свет
 (define (game-entity id)
-  (let ((t (table-get *enemies* (number->string id) #f)))
-    (if t t
-        (let ((p (table-get *pylons* (number->string id) #f)))
-          (if p p
-              (error (string-append "нет сущности #" (number->string id))))))))
+  (let ((sid (number->string id)))
+    (let ((t (table-get *enemies* sid #f)))
+      (if t t
+          (let ((p (table-get *pylons* sid #f)))
+            (if p p
+                (let ((l (table-get *lights* sid #f)))
+                  (if l l
+                      (error (string-append "нет сущности #" sid))))))))))
 
 (define (game-remove! id)
-  (table-remove! *enemies* (number->string id))
-  (table-remove! *pylons* (number->string id)))
+  (let ((sid (number->string id)))
+    (table-remove! *enemies* sid)
+    (table-remove! *enemies* id)
+    (table-remove! *pylons* sid)
+    (table-remove! *pylons* id)
+    (table-remove! *lights* sid)
+    (table-remove! *lights* id)))
 
 (define (game-spawn kind) (spawn-enemy kind))
 
 (define (game-spawn-at kind x z)
-  (if (eq? kind 'pylon)
-      (spawn-pylon x z)
+  (cond
+    ((eq? kind 'pylon) (spawn-pylon x z))
+    ((eq? kind 'light) (spawn-light x 3.5 z 1.0 0.85 0.4 16.0 1.8))
+    (else
       (let ((id (spawn-enemy kind)))
         (let ((e (game-entity id)))
           (table-set! e 'x x)
           (table-set! e 'z z))
-        id)))
+        id))))
 
 ;; сцена для иерархии редактора: таблицы → JSON-объекты (editor.lisp: obj)
 (define (scene-entities)
@@ -468,6 +509,19 @@
                  'ref (string-append "(game-entity " (number->string id) ")")
                  'x (table-get p 'x 0.0) 'z (table-get p 'z 0.0))))
         (table-entries *pylons*))
+   (map (lambda (entry)
+          (let* ((id (string->number (car entry))) (l (cadr entry)))
+            (obj 'id id 'type "light" 'name "Источник света"
+                 'ref (string-append "(game-entity " (number->string id) ")")
+                 'x (table-get l 'x 0.0)
+                 'y (table-get l 'y 3.0)
+                 'z (table-get l 'z 0.0)
+                 'r (table-get l 'r 1.0)
+                 'g (table-get l 'g 0.85)
+                 'b (table-get l 'b 0.4)
+                 'radius (table-get l 'radius 15.0)
+                 'intensity (table-get l 'intensity 1.5))))
+        (table-entries *lights*))
    (map (lambda (b)
           (obj 'type "bullet" 'name "Пуля"
                'x (table-get b 'x 0.0) 'z (table-get b 'z 0.0)))
@@ -491,4 +545,5 @@
 (define (prefab-list)
   (list (obj 'kind "grunt" 'name "Грант" 'hp 1)
         (obj 'kind "brute" 'name "Брут" 'hp 3)
-        (obj 'kind "pylon" 'name "Пилон")))
+        (obj 'kind "pylon" 'name "Пилон" 'desc "башня-укрытие")
+        (obj 'kind "light" 'name "Источник света" 'desc "Точечный свет 3D")))

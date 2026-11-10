@@ -526,7 +526,49 @@ function drawGizmo() {
   const ctx = cvs.getContext("2d");
   ctx.clearRect(0, 0, box.cw, box.ch);
   handles = null;
-  if (!gizmoOn || !selected || !mvp) return;
+  if (!gizmoOn || !mvp) return;
+
+  // Отрисовка маркеров источников света (Point Lights) в сцене
+  for (const en of (scene || [])) {
+    if (en.type === "light") {
+      const lp = worldToScreen(entPos(en));
+      if (!lp) continue;
+      const isSel = (selected && entKey(selected) === entKey(en));
+      ctx.save();
+      // Ореол
+      const glow = ctx.createRadialGradient(lp.x, lp.y, 2, lp.x, lp.y, 16);
+      glow.addColorStop(0, isSel ? "rgba(255, 255, 220, 0.95)" : "rgba(255, 230, 80, 0.85)");
+      glow.addColorStop(0.4, isSel ? "rgba(255, 200, 50, 0.5)" : "rgba(255, 170, 20, 0.35)");
+      glow.addColorStop(1, "rgba(255, 120, 0, 0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(lp.x, lp.y, 16, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ядро лампочки
+      ctx.fillStyle = isSel ? "#ffffff" : "#ffe855";
+      ctx.strokeStyle = isSel ? "#ffaa00" : "#d35400";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(lp.x, lp.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Лучи
+      ctx.strokeStyle = isSel ? "#ffffff" : "rgba(255, 215, 0, 0.85)";
+      ctx.lineWidth = 1.2;
+      for (let a = 0; a < 8; a++) {
+        const ang = a * (Math.PI / 4);
+        ctx.beginPath();
+        ctx.moveTo(lp.x + Math.cos(ang) * 7, lp.y + Math.sin(ang) * 7);
+        ctx.lineTo(lp.x + Math.cos(ang) * 11, lp.y + Math.sin(ang) * 11);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  if (!selected) return;
   const pos = entPos(selected);
   const c0 = worldToScreen(pos);
   if (!c0) return;
@@ -808,7 +850,15 @@ function renderInsp() {
     return;
   }
   const skip = new Set(["id", "type", "ref", "name", "__i"]);
-  let html = "<div class='name'>" + escapeHtml(selected.name || selected.type) + " #" + selected.id + "</div>";
+  let html = "<div class='name'>" + (selected.type === "light" ? "💡 " : "") + escapeHtml(selected.name || selected.type) + " #" + selected.id + "</div>";
+  if (selected.type === "light" && selected.r !== undefined) {
+    const cr = Math.min(255, Math.max(0, Math.round((selected.r || 1) * 255)));
+    const cg = Math.min(255, Math.max(0, Math.round((selected.g || 1) * 255)));
+    const cb = Math.min(255, Math.max(0, Math.round((selected.b || 1) * 255)));
+    html += "<div style='display:flex;align-items:center;gap:8px;padding:4px 0 8px;font-size:11px;color:var(--dim)'>" +
+            "<span style='display:inline-block;width:14px;height:14px;border-radius:50%;background:rgb(" + cr + "," + cg + "," + cb + ");box-shadow:0 0 6px rgb(" + cr + "," + cg + "," + cb + ")'></span>" +
+            "Цвет излучения</div>";
+  }
   html += "<div class='hint' style='padding:0 0 6px'>ref: <code>" + escapeHtml(selected.ref || "?") + "</code></div>";
   for (const k of Object.keys(selected)) {
     if (skip.has(k)) continue;
@@ -819,7 +869,7 @@ function renderInsp() {
     }
   }
   html += "<button class='apply primary' onclick='applyInsp()'>Применить</button>";
-  html += (selected.type === "enemy" || selected.type === "pylon")
+  html += (selected.type === "enemy" || selected.type === "pylon" || selected.type === "light")
         ? "<button class='apply del' onclick='removeSel()'>Удалить</button>" : "";
   box.innerHTML = html;
 }
@@ -838,7 +888,7 @@ function applyInsp() {
   if (sets.length) evalLisp("(begin " + sets.join(" ") + ")");
 }
 function removeSel() {
-  if (selected && (selected.type === "enemy" || selected.type === "pylon") && selected.id != null) {
+  if (selected && (selected.type === "enemy" || selected.type === "pylon" || selected.type === "light") && selected.id != null) {
     evalLisp("(mcp-remove " + selected.id + ")");
     logLine("удалена сущность #" + selected.id, "sys");
   }

@@ -10,6 +10,7 @@
 (load "textures.lisp")   ;; системный DSL: UV-развёртки примитивов
 (load "materials.lisp")  ;; системный DSL этапа 7: defmaterial/use-material!
 (load "load-gltf.lisp")  ;; уровень 3 этапа 8: glTF 2.0 (ASCII) загрузчик
+(load "editor.lisp")     ;; системный DSL v0.3: мост редактора и MCP
 (load "island.lisp")     ;; уровень 4: сцена «ОСТРОВ»
 
 (print "rlisp-engine ISLAND: HAL(+GPU) → render3d → материалы → glTF → сцена; update/draw на Lisp")
