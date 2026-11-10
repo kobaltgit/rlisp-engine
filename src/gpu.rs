@@ -67,6 +67,39 @@ pub trait GpuBackend {
     /// дослать команды; при readback — композит кадра в fb.
     /// Возвращает (submit_ns, readback_ns) — профилирование --bench.
     fn flush(&mut self, fb: &mut [u8], w: usize, h: usize, readback: bool) -> (u128, u128);
+    /// 3D-очистка кадра: цвет + аппаратный z-буфер
+    fn clear_3d(&mut self, r: u8, g: u8, b: u8);
+    /// Отрисовка 3D-меша на GPU
+    #[allow(clippy::too_many_arguments)]
+    fn draw_mesh_3d(
+        &mut self,
+        pos: &[f32],
+        uv: Option<&[f32]>,
+        rgba: Option<&[f32]>,
+        nrm: Option<&[f32]>,
+        idx: &[f32],
+        model: &[f32],
+        mvp: &[f32],
+        tint: (f32, f32, f32),
+        texid: i64,
+        wire: bool,
+        r3: &crate::gpu_3d::R3State,
+    ) -> Result<u64, String>;
+    /// Отрисовка батча инстансов (аппаратный instancing на GPU)
+    #[allow(clippy::too_many_arguments)]
+    fn draw_batch_3d(
+        &mut self,
+        pos: &[f32],
+        uv: Option<&[f32]>,
+        nrm: Option<&[f32]>,
+        idx: &[f32],
+        insts: &[f32],
+        mvp: &[f32],
+        texid: i64,
+        r3: &crate::gpu_3d::R3State,
+    ) -> Result<u64, String>;
+    /// сброс кэша мешей (при hot reload)
+    fn clear_mesh_cache(&mut self) {}
 }
 
 /// Выбор бэкенда для --wgpu: без фичи или без адаптера — честный откат на
@@ -205,11 +238,19 @@ pub fn composite_readback(fb: &mut [u8], w: usize, h: usize, pad: usize, data: &
         let src = &data[py * pad..py * pad + w * 4];
         for px in 0..w {
             let s = px * 4;
-            if src[s + 3] == 255 {
+            let a = src[s + 3] as u32;
+            if a == 255 {
                 let d = (py * w + px) * 4;
                 fb[d] = src[s];
                 fb[d + 1] = src[s + 1];
                 fb[d + 2] = src[s + 2];
+                fb[d + 3] = 255;
+            } else if a > 0 {
+                let d = (py * w + px) * 4;
+                let inv_a = 255 - a;
+                fb[d] = ((src[s] as u32 * a + fb[d] as u32 * inv_a) / 255) as u8;
+                fb[d + 1] = ((src[s + 1] as u32 * a + fb[d + 1] as u32 * inv_a) / 255) as u8;
+                fb[d + 2] = ((src[s + 2] as u32 * a + fb[d + 2] as u32 * inv_a) / 255) as u8;
                 fb[d + 3] = 255;
             }
         }
@@ -382,6 +423,10 @@ pub struct WgpuRenderer {
     readback: wgpu::Buffer,
     readback_pad: usize,
 
+    depth_target: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    pub(crate) pipeline_3d: crate::gpu_3d::Pipeline3D,
+
     vbuf: wgpu::Buffer,
     vcap: usize, // байт
 
@@ -392,6 +437,7 @@ pub struct WgpuRenderer {
 
     /// реестр текстур бэкенда: id → (текстура, w, h)
     texs: HashMap<i64, (wgpu::Texture, u32, u32)>,
+    tex_views: HashMap<i64, (wgpu::TextureView, wgpu::BindGroup)>,
     /// скрэтч-текстура для gpu-blit (переиспользуется при том же размере)
     scratch: Option<(usize, usize, wgpu::Texture)>,
 
@@ -485,7 +531,7 @@ impl WgpuRenderer {
                     module: &module,
                     entry_point: "vs_main",
                     compilation_options: Default::default(),
-                    buffers: &[vlayout.clone()],
+                    buffers: std::slice::from_ref(&vlayout),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
@@ -535,6 +581,9 @@ impl WgpuRenderer {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let depth_target = device.create_texture(&Self::depth_desc(w, h));
+        let depth_view = depth_target.create_view(&wgpu::TextureViewDescriptor::default());
+        let pipeline_3d = crate::gpu_3d::Pipeline3D::new(&device, &tex_bind_layout);
         let vbuf_dummy = Self::dummy_buffer(&device);
         let readback_pad = Self::pad_rows(w);
         let mut r = WgpuRenderer {
@@ -546,6 +595,9 @@ impl WgpuRenderer {
             target_h: h,
             readback,
             readback_pad,
+            depth_target,
+            depth_view,
+            pipeline_3d,
             vbuf: vbuf_dummy,
             vcap: 0,
             pipeline_solid,
@@ -553,6 +605,7 @@ impl WgpuRenderer {
             tex_bind_layout,
             sampler,
             texs: HashMap::new(),
+            tex_views: HashMap::new(),
             scratch: None,
             enc: None,
             vused: 0,
@@ -598,6 +651,23 @@ impl WgpuRenderer {
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        }
+    }
+
+    fn depth_desc(w: usize, h: usize) -> wgpu::TextureDescriptor<'static> {
+        wgpu::TextureDescriptor {
+            label: Some("rlisp-depth"),
+            size: wgpu::Extent3d {
+                width: w as u32,
+                height: h as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         }
     }
@@ -731,6 +801,10 @@ impl GpuBackend for WgpuRenderer {
         self.target_h = h;
         self.readback_pad = Self::pad_rows(w);
         self.readback = self.make_readback(w, h);
+        self.depth_target = self.device.create_texture(&Self::depth_desc(w, h));
+        self.depth_view = self
+            .depth_target
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.enc = None;
         self.vused = 0;
         self.pending = 0;
@@ -977,31 +1051,48 @@ impl GpuBackend for WgpuRenderer {
                 depth_or_array_layers: 1,
             },
         );
+        let view = t.create_view(&wgpu::TextureViewDescriptor::default());
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rlisp-tex-bg"),
+            layout: &self.tex_bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+            ],
+        });
+        self.tex_views.insert(id, (view, bg));
         self.texs.insert(id, (t, w as u32, h as u32));
     }
 
     fn tex_free(&mut self, id: i64) {
         self.texs.remove(&id); // wgpu::Texture удаляется вместе со слотом
+        self.tex_views.remove(&id);
     }
 
     fn flush(&mut self, fb: &mut [u8], w: usize, h: usize, readback: bool) -> (u128, u128) {
         let t0 = std::time::Instant::now();
-        if let Some(enc) = self.enc.take() {
-            self.queue.submit([enc.finish()]);
-        }
-        let submit_ns = t0.elapsed().as_nanos();
-        if !readback || self.pending == 0 {
+        if !readback {
+            if let Some(enc) = self.enc.take() {
+                self.queue.submit([enc.finish()]);
+            }
+            let submit_ns = t0.elapsed().as_nanos();
+            self.pipeline_3d.reset_frame();
             self.vused = 0;
             self.pending = 0;
             return (submit_ns, 0);
         }
-        let t1 = std::time::Instant::now();
-        // target → readback buffer → map → композит в fb
-        let mut enc = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rlisp-readback"),
-            });
+        let mut enc = self.enc.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rlisp-readback"),
+                })
+        });
         enc.copy_texture_to_buffer(
             self.target.as_image_copy(),
             wgpu::ImageCopyBuffer {
@@ -1019,6 +1110,8 @@ impl GpuBackend for WgpuRenderer {
             },
         );
         self.queue.submit([enc.finish()]);
+        let submit_ns = t0.elapsed().as_nanos();
+        let t1 = std::time::Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
         self.readback
             .slice(..)
@@ -1056,43 +1149,339 @@ impl GpuBackend for WgpuRenderer {
         }
         self.readback.unmap();
         let readback_ns = t1.elapsed().as_nanos();
-        // сброс покрытия: следующий кадр начинает чистую alpha-маску
-        self.clear_transparent();
+        self.pipeline_3d.reset_frame();
         self.vused = 0;
         self.pending = 0;
         (submit_ns, readback_ns)
     }
-}
 
-#[cfg(feature = "wgpu")]
-impl WgpuRenderer {
-    /// alpha=0 везде: GPU-слой больше ничего не покрывает (следующий кадр)
-    fn clear_transparent(&mut self) {
+    fn clear_3d(&mut self, r: u8, g: u8, b: u8) {
+        let color = wgpu::Color {
+            r: r as f64 / 255.0,
+            g: g as f64 / 255.0,
+            b: b as f64 / 255.0,
+            a: 1.0,
+        };
         let view = self
             .target
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut enc = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rlisp-reset"),
-            });
+        let mut enc = self.enc.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rlisp-frame"),
+                })
+        });
         {
             let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rlisp-reset-pass"),
+                label: Some("rlisp-clear-3d"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
         }
-        self.queue.submit([enc.finish()]);
+        self.enc = Some(enc);
+        self.pipeline_3d.reset_frame();
+        self.pending += 1;
+    }
+
+    fn draw_mesh_3d(
+        &mut self,
+        pos: &[f32],
+        uv: Option<&[f32]>,
+        rgba: Option<&[f32]>,
+        _nrm: Option<&[f32]>,
+        idx: &[f32],
+        model: &[f32],
+        mvp: &[f32],
+        tint: (f32, f32, f32),
+        texid: i64,
+        wire: bool,
+        r3: &crate::gpu_3d::R3State,
+    ) -> Result<u64, String> {
+        if pos.len() % 3 != 0 || pos.is_empty() || idx.is_empty() {
+            return Ok(0);
+        }
+
+        let (vbuf, ibuf, v_bytes_len, idx_count) = self.pipeline_3d.get_or_upload_mesh(
+            &self.device,
+            &self.queue,
+            pos,
+            uv,
+            rgba,
+            idx,
+            tint,
+        );
+
+        let mut m_model = [0.0f32; 16];
+        m_model.copy_from_slice(model);
+        let mut m_mvp = [0.0f32; 16];
+        m_mvp.copy_from_slice(mvp);
+
+        let raw = crate::gpu_3d::Uniforms3DRaw {
+            model: m_model,
+            mvp: m_mvp,
+            light_dir: r3.light,
+            ambient: r3.ambient,
+            diffuse: r3.diffuse,
+            spec: r3.spec,
+            shininess: r3.shininess,
+            alpha_test: r3.alpha_test,
+            camera_pos: r3.view,
+            blend_opacity: r3.blend,
+            tiling: r3.tiling,
+            fog_density: r3.fog[3],
+            _pad0: 0.0,
+            fog_color: [r3.fog[0], r3.fog[1], r3.fog[2]],
+            _pad1: 0.0,
+        };
+        let u_offset = self
+            .pipeline_3d
+            .write_uniforms(&self.queue, &self.device, &raw);
+
+        let is_blend = r3.blend < 1.0
+            || rgba
+                .map(|c| c.iter().skip(3).step_by(4).any(|&a| a < 1.0))
+                .unwrap_or(false);
+        let write_depth = r3.blend >= 0.90
+            && rgba
+                .map(|c| c.iter().skip(3).step_by(4).all(|&a| a >= 0.90))
+                .unwrap_or(true);
+        let pipe = if wire {
+            &self.pipeline_3d.pipeline_wire
+        } else if texid != 0 {
+            if is_blend {
+                if write_depth {
+                    &self.pipeline_3d.pipeline_blend_tex_depth
+                } else {
+                    &self.pipeline_3d.pipeline_blend_tex
+                }
+            } else {
+                &self.pipeline_3d.pipeline_tex
+            }
+        } else if is_blend {
+            &self.pipeline_3d.pipeline_blend_solid
+        } else {
+            &self.pipeline_3d.pipeline_solid
+        };
+
+        let view = self
+            .target
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let tex_entry = if texid != 0 {
+            self.tex_views.get(&texid)
+        } else {
+            None
+        };
+
+        let mut enc = self.enc.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rlisp-frame"),
+                })
+        });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rlisp-draw-3d-mesh"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, &self.pipeline_3d.uniform_bind_group, &[u_offset]);
+            if let Some((_, bg)) = tex_entry {
+                pass.set_bind_group(1, bg, &[]);
+            }
+            pass.set_vertex_buffer(0, vbuf.slice(0..v_bytes_len));
+            pass.set_index_buffer(
+                ibuf.slice(0..(idx_count as u64 * 4)),
+                wgpu::IndexFormat::Uint32,
+            );
+            pass.draw_indexed(0..idx_count, 0, 0..1);
+        }
+        self.enc = Some(enc);
+        self.pending += 1;
+
+        let drawn = if wire {
+            idx_count as u64 / 2
+        } else {
+            idx_count as u64 / 3
+        };
+        Ok(drawn)
+    }
+
+    fn draw_batch_3d(
+        &mut self,
+        pos: &[f32],
+        uv: Option<&[f32]>,
+        _nrm: Option<&[f32]>,
+        idx: &[f32],
+        insts: &[f32],
+        mvp: &[f32],
+        texid: i64,
+        r3: &crate::gpu_3d::R3State,
+    ) -> Result<u64, String> {
+        if pos.len() % 3 != 0 || pos.is_empty() || idx.is_empty() || insts.len() < 12 {
+            return Ok(0);
+        }
+        let k = insts.len() / 12;
+
+        let (vbuf, ibuf, v_bytes_len, idx_count) = self.pipeline_3d.get_or_upload_mesh(
+            &self.device,
+            &self.queue,
+            pos,
+            uv,
+            None,
+            idx,
+            (1.0, 1.0, 1.0),
+        );
+
+        let inst_offset = self
+            .pipeline_3d
+            .write_instances(&self.queue, &self.device, insts);
+
+        let mut m_mvp = [0.0f32; 16];
+        m_mvp.copy_from_slice(mvp);
+        let mut m_identity = [0.0f32; 16];
+        m_identity[0] = 1.0;
+        m_identity[5] = 1.0;
+        m_identity[10] = 1.0;
+        m_identity[15] = 1.0;
+
+        let raw = crate::gpu_3d::Uniforms3DRaw {
+            model: m_identity,
+            mvp: m_mvp,
+            light_dir: r3.light,
+            ambient: r3.ambient,
+            diffuse: r3.diffuse,
+            spec: r3.spec,
+            shininess: r3.shininess,
+            alpha_test: r3.alpha_test,
+            camera_pos: r3.view,
+            blend_opacity: r3.blend,
+            tiling: r3.tiling,
+            fog_density: r3.fog[3],
+            _pad0: 0.0,
+            fog_color: [r3.fog[0], r3.fog[1], r3.fog[2]],
+            _pad1: 0.0,
+        };
+        let u_offset = self
+            .pipeline_3d
+            .write_uniforms(&self.queue, &self.device, &raw);
+
+        let is_blend = r3.blend < 1.0;
+        let write_depth = r3.blend >= 0.90;
+        let pipe = if texid != 0 {
+            if is_blend {
+                if write_depth {
+                    &self.pipeline_3d.pipeline_inst_blend_tex_depth
+                } else {
+                    &self.pipeline_3d.pipeline_inst_blend_tex
+                }
+            } else {
+                &self.pipeline_3d.pipeline_inst_tex
+            }
+        } else if is_blend {
+            &self.pipeline_3d.pipeline_inst_blend_solid
+        } else {
+            &self.pipeline_3d.pipeline_inst_solid
+        };
+
+        let view = self
+            .target
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let tex_entry = if texid != 0 {
+            self.tex_views.get(&texid)
+        } else {
+            None
+        };
+
+        let mut enc = self.enc.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rlisp-frame"),
+                })
+        });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("rlisp-draw-3d-batch"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, &self.pipeline_3d.uniform_bind_group, &[u_offset]);
+            if let Some((_, bg)) = tex_entry {
+                pass.set_bind_group(1, bg, &[]);
+            }
+            pass.set_vertex_buffer(0, vbuf.slice(0..v_bytes_len));
+            pass.set_vertex_buffer(
+                1,
+                self.pipeline_3d
+                    .inst_buf
+                    .slice(inst_offset..inst_offset + (insts.len() * 4) as u64),
+            );
+            pass.set_index_buffer(
+                ibuf.slice(0..(idx_count as u64 * 4)),
+                wgpu::IndexFormat::Uint32,
+            );
+            pass.draw_indexed(0..idx_count, 0, 0..k as u32);
+        }
+        self.enc = Some(enc);
+        self.pending += 1;
+
+        let drawn = (idx_count as u64 / 3) * (k as u64);
+        Ok(drawn)
+    }
+
+    fn clear_mesh_cache(&mut self) {
+        self.pipeline_3d.clear_mesh_cache();
     }
 }
 

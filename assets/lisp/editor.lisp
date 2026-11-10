@@ -69,10 +69,14 @@
                        " 'z " z "))")
         (if (string=? t "pylon")
             (string-append "(mcp-spawn-at 'pylon " x " " z ")")
-            (if (string=? t "enemy")
-                (string-append "(mcp-spawn-at '"
-                               (table-get e 'name "grunt") " " x " " z ")")
-                "")))))
+            (if (string=? t "light")
+                (let ((y (number->string (table-get e 'y 3.0))))
+                  (string-append "(begin (let ((id (mcp-spawn-at 'light " x " " z "))) "
+                                 "(table-set! (game-entity id) 'y " y ")))"))
+                (if (string=? t "enemy")
+                    (string-append "(mcp-spawn-at '"
+                                   (table-get e 'name "grunt") " " x " " z ")")
+                    ""))))))
 
 (define (editor-save-scene fname)
   (if (defined? 'scene-entities)

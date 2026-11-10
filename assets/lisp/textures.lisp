@@ -139,7 +139,16 @@
 ;; (use-material! имя), текстура материала (:texture) переопределяет tex.
 (define (draw-mesh-tex mesh uv tex model mvp tint . opt)
   (if (null? opt) #f (use-material! (car opt)))
-  (gpu3d-mesh-tex (mesh-pos mesh) uv (mesh-idx mesh)
-                  (if (null? opt) tex (or (material-texture (car opt)) tex))
-                  model mvp
-                  (car tint) (cadr tint) (caddr tint)))
+  (let ((nrm (if (table? mesh) (table-get mesh 'nrm #f)
+                 (if (and (list? mesh) (> (length mesh) 2))
+                     (caddr mesh)
+                     #f))))
+    (if nrm
+        (gpu3d-mesh-tex (mesh-pos mesh) uv (mesh-idx mesh)
+                        (if (null? opt) tex (or (material-texture (car opt)) tex))
+                        model mvp
+                        (car tint) (cadr tint) (caddr tint) nrm)
+        (gpu3d-mesh-tex (mesh-pos mesh) uv (mesh-idx mesh)
+                        (if (null? opt) tex (or (material-texture (car opt)) tex))
+                        model mvp
+                        (car tint) (cadr tint) (caddr tint)))))

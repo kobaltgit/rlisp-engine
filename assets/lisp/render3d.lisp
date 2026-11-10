@@ -43,6 +43,16 @@
         0 0 (/ (+ far near) (- near far)) (/ (* 2 far near) (- near far))
         0 0 -1 0)))
 
+;; ортографическая проекция: для теней (источник света) и изометрии
+(define (mat-ortho left right bottom top near far)
+  (let ((rl (- right left))
+        (tb (- top bottom))
+        (fn (- far near)))
+    (m4 (/ 2.0 rl) 0 0 (- (/ (+ right left) rl))
+        0 (/ 2.0 tb) 0 (- (/ (+ top bottom) tb))
+        0 0 (/ -2.0 fn) (- (/ (+ far near) fn))
+        0 0 0 1)))
+
 ;; ——— векторная математика v3 (не горячая: раз в кадр) ———
 (define (v3-sub a b) (list (- (car a) (car b)) (- (cadr a) (cadr b)) (- (caddr a) (caddr b))))
 (define (v3-dot a b) (+ (* (car a) (car b)) (* (cadr a) (cadr b)) (* (caddr a) (caddr b))))
@@ -65,6 +75,20 @@
         (- (car f)) (- (cadr f)) (- (caddr f)) (v3-dot f eye)
         0 0 0 1)))
 
+;; матрица источника света (солнца): орто-камера, направленная на цель
+(define (light-camera-matrix light-dir target size near far)
+  (let* ((ld (v3-norm light-dir))
+         (dist (* 0.5 (+ near far)))
+         (eye (list (+ (car target) (* (car ld) dist))
+                    (+ (cadr target) (* (cadr ld) dist))
+                    (+ (caddr target) (* (cadr ld) dist))))
+         (up (if (and (< (abs (car ld)) 0.1) (< (abs (caddr ld)) 0.1))
+                 (list 0 0 1)
+                 (list 0 1 0)))
+         (view (mat-lookat eye target up))
+         (proj (mat-ortho (- size) size (- size) size near far)))
+    (mat4-mul proj view)))
+
 ;; MVP одной матрицей: perspective · lookat
 (define (camera-mvp eye target fov)
   (let* ((wh (window-size))
@@ -73,11 +97,33 @@
          (proj (mat-perspective fov aspect 0.5 400.0)))
     (mat4-mul proj view)))
 
-;; ——— меши: (позиции-f32 индексы-f32) ———
-(define (mesh-make pos idx)
-  (list (f32-from-list pos) (f32-from-list idx)))
+;; макрос прохода теней:
+;; (with-shadow-map light-mat body ...)
+(defmacro with-shadow-map (light-mat . body)
+  `(begin
+     (gpu3d-shadow-begin ,light-mat 512 512)
+     ,@body
+     (gpu3d-shadow-end)))
+
+;; хелперы точечных источников света (Point Lights):
+(define (add-point-light x y z r g b radius . opt)
+  (let ((att (if (null? opt) 1.0 (car opt))))
+    (gpu3d-add-light 'point x y z r g b radius att)))
+
+(define (clear-point-lights)
+  (gpu3d-clear-lights))
+
+;; ——— меши: (позиции-f32 индексы-f32 [нормали-f32]) ———
+(define (mesh-make pos idx . opt)
+  (if (null? opt)
+      (list (f32-from-list pos) (f32-from-list idx))
+      (list (f32-from-list pos) (f32-from-list idx) (f32-from-list (car opt)))))
 (define (mesh-pos m) (car m))
 (define (mesh-idx m) (cadr m))
+(define (mesh-nrm m)
+  (if (table? m)
+      (table-get m 'nrm #f)
+      (if (and (list? m) (> (length m) 2)) (caddr m) #f)))
 
 ;; quad a b c d (CCW снаружи) → треугольники (a b c) (a c d)
 (define (mesh-quads-idx quads)
@@ -106,17 +152,50 @@
                    2 0 5  1 2 5  3 1 5  0 3 5)))
     (mesh-make v idx)))
 
-;; UV-сфера: lat колец, lon сегментов. Внутренние define работают как letrec.
+;; цилиндр со сглаженными нормалями: r — радиус, h — высота, seg — число сегментов
+(define (mesh-cylinder r h seg)
+  (let ((pi2 6.28318530)
+        (h2 (/ h 2.0))
+        (pos '())
+        (nrm '())
+        (quads '()))
+    (dotimes (i (+ seg 1))
+      (let* ((th (* pi2 (/ i seg)))
+             (nx (cos th))
+             (nz (sin th))
+             (x (* r nx))
+             (z (* r nz)))
+        (set! pos (append pos (list x (- h2) z)))
+        (set! nrm (append nrm (list nx 0.0 nz)))
+        (set! pos (append pos (list x h2 z)))
+        (set! nrm (append nrm (list nx 0.0 nz)))))
+    (dotimes (i seg)
+      (let* ((v0 (* i 2))
+             (v1 (+ v0 1))
+             (v2 (+ v0 2))
+             (v3 (+ v0 3)))
+        (set! quads (cons (list v0 v2 v3 v1) quads))))
+    (mesh-make pos (mesh-quads-idx (reverse quads)) nrm)))
+
+;; UV-сфера со сглаженными нормалями: lat колец, lon сегментов.
 (define (mesh-sphere r lat lon)
   (define (vert i j)
     (let ((phi (- (* 3.14159265 (/ i lat)) (/ 3.14159265 2)))
           (th (* 6.28318530 (/ j lon))))
       (list (* r (cos phi) (cos th)) (* r (sin phi)) (* r (cos phi) (sin th)))))
+  (define (norm i j)
+    (let ((phi (- (* 3.14159265 (/ i lat)) (/ 3.14159265 2)))
+          (th (* 6.28318530 (/ j lon))))
+      (list (* (cos phi) (cos th)) (sin phi) (* (cos phi) (sin th)))))
   (define (vidx i j) (+ (* i (+ lon 1)) j))
   (define (ring-verts i j acc)
     (if (> j lon) acc (ring-verts i (+ j 1) (append acc (vert i j)))))
+  (define (ring-norms i j acc)
+    (if (> j lon) acc (ring-norms i (+ j 1) (append acc (norm i j)))))
   (define (all-verts i acc)
     (if (> i lat) acc (all-verts (+ i 1) (ring-verts i 0 acc))))
+  (define (all-norms i acc)
+    (if (> i lat) acc (all-norms (+ i 1) (ring-norms i 0 acc))))
   (define (row-quads i j acc)
     (if (>= j lon) acc
         (row-quads i (+ j 1)
@@ -124,7 +203,14 @@
                                (vidx (+ i 1) (+ j 1)) (vidx i (+ j 1))) acc))))
   (define (all-quads i acc)
     (if (>= i lat) acc (all-quads (+ i 1) (row-quads i 0 acc))))
-  (mesh-make (all-verts 0 '()) (mesh-quads-idx (all-quads 0 '()))))
+  (mesh-make (all-verts 0 '()) (mesh-quads-idx (all-quads 0 '())) (all-norms 0 '())))
+
+;; вычисление усредненных нормалей сетки (через нативный gpu3d-compute-normals)
+(define (mesh-compute-smooth-normals mesh)
+  (let* ((pos (mesh-pos mesh))
+         (idx (mesh-idx mesh))
+         (nrm (gpu3d-compute-normals pos idx)))
+    (list pos idx nrm)))
 
 ;; тор: R — радиус кольца, r — трубки, ring x seg сегментов
 (define (mesh-torus R r ring seg)
@@ -195,8 +281,12 @@
 ;; работают как раньше. Материалы: assets/lisp/materials.lisp.
 (define (draw-mesh mesh model mvp color . opt)
   (if (null? opt) #f (use-material! (car opt)))
-  (gpu3d-mesh (mesh-pos mesh) (mesh-idx mesh) model mvp
-              (car color) (cadr color) (caddr color)))
+  (let ((nrm (mesh-nrm mesh)))
+    (if nrm
+        (gpu3d-mesh (mesh-pos mesh) (mesh-idx mesh) model mvp
+                    (car color) (cadr color) (caddr color) nrm)
+        (gpu3d-mesh (mesh-pos mesh) (mesh-idx mesh) model mvp
+                    (car color) (cadr color) (caddr color)))))
 
 ;; ——— БАТЧ-ВЕРШИННИК (v0.3): много объектов одним draw call ———
 ;; Ряд инстанса — 12 f32: tx ty tz sx sy sz yaw pitch roll r g b.
@@ -209,14 +299,22 @@
 
 (define (draw-batch mesh insts mvp . opt)
   (if (null? opt) #f (use-material! (car opt)))
-  (gpu3d-batch (mesh-pos mesh) (mesh-idx mesh) (f32-from-list insts) mvp))
+  (let ((nrm (mesh-nrm mesh)))
+    (if nrm
+        (gpu3d-batch (mesh-pos mesh) (mesh-idx mesh) (f32-from-list insts) mvp nrm)
+        (gpu3d-batch (mesh-pos mesh) (mesh-idx mesh) (f32-from-list insts) mvp))))
 
 ;; материал переопределяет текстуру: :texture из :texture-слота или tex-аргумент
 (define (draw-batch-tex mesh uv tex insts mvp . opt)
   (if (null? opt) #f (use-material! (car opt)))
-  (gpu3d-batch-tex (mesh-pos mesh) uv (mesh-idx mesh)
-                   (if (null? opt) tex (or (material-texture (car opt)) tex))
-                   (f32-from-list insts) mvp))
+  (let ((nrm (mesh-nrm mesh)))
+    (if nrm
+        (gpu3d-batch-tex (mesh-pos mesh) uv (mesh-idx mesh)
+                         (if (null? opt) tex (or (material-texture (car opt)) tex))
+                         (f32-from-list insts) mvp nrm)
+        (gpu3d-batch-tex (mesh-pos mesh) uv (mesh-idx mesh)
+                         (if (null? opt) tex (or (material-texture (car opt)) tex))
+                         (f32-from-list insts) mvp))))
 
 
 ;; wire-объект: (f32-позиции f32-пары-индексов)
