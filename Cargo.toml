@@ -1,6 +1,6 @@
 [package]
 name = "rlisp-engine"
-version = "0.3.0"
+version = "0.12.0"
 edition = "2021"
 description = "Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL. v0.3: текстуры + батч-вершинник + веб-редактор аля Unity + MCP (AI Ready)"
 license = "MIT"
@@ -26,6 +26,7 @@ optional = true
 
 [features]
 default = []
+# Full wgpu-бэкенд: offscreen-рендер + readback в Hal::fb (см. src/gpu.rs).
 wgpu = ["dep:wgpu"]
 # Этап 3: copy-and-patch JIT числовых ядер (x86_64-linux, ноль зависимостей).
 # Дефолтная сборка без jit: интерпретатор и SIMD-токенизатор работают как раньше.

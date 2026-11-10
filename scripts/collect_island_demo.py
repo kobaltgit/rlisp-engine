@@ -5,10 +5,10 @@ import os
 
 from PIL import Image
 
-fs = sorted(glob.glob("demo/frames_island/frame_*.png"))
-assert fs, "нет кадров demo/frames_island"
+fs = sorted(glob.glob("demo/frames_r5/frame_*.png"))
+assert fs, "нет кадров demo/frames_r5"
 frames = [Image.open(f).convert("RGB") for f in fs]
-sub = frames[::2]
+sub = frames[::2]  # 40 кадров -> 20 в GIF
 sub[0].save("demo/island.gif", save_all=True, append_images=sub[1:],
             duration=120, loop=0, optimize=True)
 w, h = frames[0].size

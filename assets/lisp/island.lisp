@@ -20,18 +20,18 @@
 (window-create *screen-w* *screen-h* "ISLAND :: rlisp-engine 3D")
 
 ;; ——— persistent-состояние: переживает hot reload ———
-(defpersistent *t* 14.0) ;; старт орбиты между пальмами (без листьев в объективе)
+(defpersistent *t* 17.5) ;; старт орбиты в зазоре азимутов пальм (1.15/2.05/2.95):
+                         ;; виток демки 17.5→25.5 держится ≥0.4 рад от крон
 (defpersistent *frame* 0)
 (defpersistent *fps-last* 0.0)
 (defpersistent *fps-last-val* 0.0)
 
 ;; ——— мир ———
 (define *ia* 32.0)            ; полуразмер ландшафта (вместе с дном)
-(define *in* 60)              ; клеток ландшафта (61×61; шаг 1.07)
-                              ; ревизия 4: гладкие склоны вместо граней)
+(define *in* 68)              ; клеток ландшафта (69×69; шаг 0.94) — ревизия 5:
+                              ; плотнее только потому, что вода ушла на ALU
 (define *wa* 56.0)            ; полуразмер водного плана (угол сетки за туманом)
-(define *wn* 24)              ; клеток воды (25×25; шаг 4.7)
-                              ; кромка пены; цвет обновляется блоками строк)
+(define *wn* 28)              ; клеток воды (29×29; шаг 3.86)
 
 (define (hash2 x y)
   (abs (sin (+ (* x 12.9898) (* y 78.233)))))
@@ -157,19 +157,50 @@
 (define *idx-sea* (cadddr *bands*))
 
 ;; ——— вода: per-vertex RGBA (глубина/френель/пена) ———
+;; Этап 9.3: per-vertex циклы переведены на векторный ALU движка
+;; (f32vec-op! / f32vec-strided-set!): один тик воды — ~80 пакетных
+;; вызовов вместо ~30 000 интерпретируемых f32set!/f32ref за тик.
+(define *w-n* (* (+ *wn* 1) (+ *wn* 1)))   ; вершин в сетке воды
 (define *water-raw* (grid-make *wa* *wn* (lambda (x z) 0.0)))
 (define *wpos* (car *water-raw*))
 (define *wuv* (cadr *water-raw*))
 (define *widx* (caddr *water-raw*))
-(define *wvc* (make-f32vec (* (+ *wn* 1) (+ *wn* 1) 4) 1.0))
+(define *wvc* (make-f32vec (* *w-n* 4) 1.0))
+;; плотные векторы (по вершине): высота волны, статичные X/Z, фазы волн
+(define *wy*  (make-f32vec *w-n* 0.0))
+(define *wx*  (make-f32vec *w-n* 0.0))
+(define *wz*  (make-f32vec *w-n* 0.0))
+(define *wph1* (make-f32vec *w-n* 0.0))    ; 1.1·x
+(define *wph2* (make-f32vec *w-n* 0.0))    ; 1.4·z
+(define *wph3* (make-f32vec *w-n* 0.0))    ; 2.3·(x+z)
 ;; статично: высота дна под вершиной воды
-(define *wterr* (make-f32vec (* (+ *wn* 1) (+ *wn* 1)) 0.0))
+(define *wterr* (make-f32vec *w-n* 0.0))
+;; скретчи и плотные каналы цвета/альфы
+(define *ws1* (make-f32vec *w-n* 0.0))
+(define *ws2* (make-f32vec *w-n* 0.0))
+(define *ws3* (make-f32vec *w-n* 0.0))
+(define *ws4* (make-f32vec *w-n* 0.0))
+(define *ws5* (make-f32vec *w-n* 0.0))
+(define *wcr* (make-f32vec *w-n* 0.0))
+(define *wcg* (make-f32vec *w-n* 0.0))
+(define *wcb* (make-f32vec *w-n* 0.0))
+(define *wca* (make-f32vec *w-n* 0.0))
+(define *wcd* (make-f32vec *w-n* 0.0))     ; толщина воды
+(define *wfr* (make-f32vec *w-n* 0.0))     ; френель
+(define *wfm* (make-f32vec *w-n* 0.0))     ; пена
 (define (water-init!)
   (define (vx i) (- (* 2 *wa* (/ i *wn*)) *wa*))
   (define (vz j) (- (* 2 *wa* (/ j *wn*)) *wa*))
   (dotimes (i (+ *wn* 1))
     (dotimes (j (+ *wn* 1))
-      (f32set! *wterr* (+ (* i (+ *wn* 1)) j) (isl-h (vx i) (vz j)))))
+      (let ((k (+ (* i (+ *wn* 1)) j))
+            (x (vx i)) (z (vz j)))
+        (f32set! *wterr* k (isl-h x z))
+        (f32set! *wx* k x)
+        (f32set! *wz* k z)
+        (f32set! *wph1* k (* 1.1 x))
+        (f32set! *wph2* k (* 1.4 z))
+        (f32set! *wph3* k (* 2.3 (+ x z))))))
   #t)
 (water-init!)
 
@@ -180,49 +211,102 @@
 (define *wv-foam*  (list 0.93 0.96 0.94))
 
 (define (update-water-vc eye)
-  (define (vx i) (- (* 2 *wa* (/ i *wn*)) *wa*))
-  (define (vz j) (- (* 2 *wa* (/ j *wn*)) *wa*))
-  (dotimes (i (+ *wn* 1))
-    (dotimes (j (+ *wn* 1))
-      (let* ((k4 (* 4 (+ (* i (+ *wn* 1)) j)))
-             (kt (+ (* i (+ *wn* 1)) j))
-             (x (vx i)) (z (vz j))
-             (wy (f32ref *wpos* (+ (* kt 3) 1)))
-             (th (f32ref *wterr* kt))
-             (d (max 0.05 (- wy th)))                 ; толщина воды
-             ;; глубинный цвет: бирюза у берега → тёмная на глубине
-             (dk (min 1.0 (/ d 3.2)))
-             (cr (+ (* (car *wv-shal*) (- 1.0 dk)) (* (car *wv-deep*) dk)))
-             (cg (+ (* (cadr *wv-shal*) (- 1.0 dk)) (* (cadr *wv-deep*) dk)))
-             (cb (+ (* (caddr *wv-shal*) (- 1.0 dk)) (* (caddr *wv-deep*) dk)))
-             ;; френель: взгляд вдоль воды → отражение неба и альфа выше
-             (vx_ (- (car eye) x)) (vy_ (- (cadr eye) wy)) (vz_ (- (caddr eye) z))
-             (vl (max 0.001 (sqrt (+ (* vx_ vx_) (* vy_ vy_) (* vz_ vz_)))))
-             (cosv (min 1.0 (abs (/ vy_ vl))))
-             (fr (* (- 1.0 cosv) (- 1.0 cosv) (sqrt (- 1.0 cosv))))
-             (frr (min 0.88 (* 1.15 (* fr (- 1.0 cosv)))))
-             ;; пена: где под водой мелко И волна поднялась
-             (fm (max 0.0 (min 1.0 (/ (- 0.42 d) 0.42))))
-             (fm2 (* fm (max 0.0 (/ (+ (f32ref *wpos* (+ (* kt 3) 1)) 0.2) 0.5))))
-             (fmix (min 1.0 (+ (* 0.5 fm) fm2)))
-             (al (min 0.97 (+ 0.64 (* 0.3 frr) (* 0.3 fmix)))))
-        (f32set! *wvc* k4
-                 (+ (* cr (- 1.0 frr)) (* (car *wv-sky*) frr) (* fmix (- (car *wv-foam*) cr))))
-        (f32set! *wvc* (+ k4 1)
-                 (+ (* cg (- 1.0 frr)) (* (cadr *wv-sky*) frr) (* fmix (- (cadr *wv-foam*) cg))))
-        (f32set! *wvc* (+ k4 2)
-                 (+ (* cb (- 1.0 frr)) (* (caddr *wv-sky*) frr) (* fmix (- (caddr *wv-foam*) cb))))
-        (f32set! *wvc* (+ k4 3) al))))
+  ;; толщина воды: d = max(0.05, wy − дно); глубинный градиент dk = min(1, d/3.2)
+  (f32vec-op! *wcd* '- *wy* *wterr*)
+  (f32vec-op! *wcd* 'max *wcd* 0.05)
+  (f32vec-op! *ws1* '* *wcd* (/ 1.0 3.2))
+  (f32vec-op! *ws1* 'min *ws1* 1.0)
+  ;; базовый цвет: shal + (deep − shal)·dk — по каналам
+  (f32vec-op! *wcr* '* *ws1* (- (car *wv-deep*) (car *wv-shal*)))
+  (f32vec-op! *wcr* '+ *wcr* (car *wv-shal*))
+  (f32vec-op! *wcg* '* *ws1* (- (cadr *wv-deep*) (cadr *wv-shal*)))
+  (f32vec-op! *wcg* '+ *wcg* (cadr *wv-shal*))
+  (f32vec-op! *wcb* '* *ws1* (- (caddr *wv-deep*) (caddr *wv-shal*)))
+  (f32vec-op! *wcb* '+ *wcb* (caddr *wv-shal*))
+  ;; френель: cosv = min(1, |vy|/|V|); fr = (1−cosv)²·√(1−cosv);
+  ;; frr = min(0.88, 1.15·fr·(1−cosv))
+  (f32vec-op! *ws2* '- (car eye) *wx*)
+  (f32vec-op! *ws3* '- (caddr eye) *wz*)
+  (f32vec-op! *ws4* '- (cadr eye) *wy*)
+  (f32vec-op! *ws2* '* *ws2* *ws2*)
+  (f32vec-op! *ws3* '* *ws3* *ws3*)
+  (f32vec-op! *ws5* '* *ws4* *ws4*)
+  (f32vec-op! *ws2* '+ *ws2* *ws3*)
+  (f32vec-op! *ws2* '+ *ws2* *ws5*)
+  (f32vec-op! *ws2* 'sqrt *ws2*)
+  (f32vec-op! *ws2* 'max *ws2* 0.001)
+  (f32vec-op! *ws4* '/ *ws4* *ws2*)
+  (f32vec-op! *ws4* 'abs *ws4*)
+  (f32vec-op! *ws4* 'min *ws4* 1.0)
+  (f32vec-op! *ws3* '- 1.0 *ws4*)
+  (f32vec-op! *ws5* 'sqrt *ws3*)
+  (f32vec-op! *ws5* '* *ws5* *ws3*)
+  (f32vec-op! *ws5* '* *ws5* *ws3*)
+  (f32vec-op! *ws5* '* *ws5* 1.15)
+  (f32vec-op! *ws5* '* *ws5* *ws3*)
+  (f32vec-op! *wfr* 'min *ws5* 0.88)
+  ;; пена: fm = clamp01((0.42 − d)/0.42); fm2 = fm·max0(2·(wy + 0.2));
+  ;; fmix = min(1, 0.5·fm + fm2)
+  (f32vec-op! *ws3* '- 0.42 *wcd*)
+  (f32vec-op! *ws3* '* *ws3* (/ 1.0 0.42))
+  (f32vec-op! *ws3* 'max *ws3* 0.0)
+  (f32vec-op! *ws3* 'min *ws3* 1.0)
+  (f32vec-op! *ws4* '+ *wy* 0.2)
+  (f32vec-op! *ws4* '* *ws4* 2.0)
+  (f32vec-op! *ws4* 'max *ws4* 0.0)
+  (f32vec-op! *ws5* '* *ws3* *ws4*)
+  (f32vec-op! *ws4* '* *ws3* 0.5)
+  (f32vec-op! *wfm* '+ *ws4* *ws5*)
+  (f32vec-op! *wfm* 'min *wfm* 1.0)
+  ;; альфа: min(0.97, 0.64 + 0.3·frr + 0.3·fmix)
+  (f32vec-op! *wca* '* *wfr* 0.3)
+  (f32vec-op! *ws1* '* *wfm* 0.3)
+  (f32vec-op! *wca* '+ *wca* *ws1*)
+  (f32vec-op! *wca* '+ *wca* 0.64)
+  (f32vec-op! *wca* 'min *wca* 0.97)
+  ;; итог: c = c·(1−frr) + sky·frr + fmix·(foam − c)
+  (f32vec-op! *ws1* '- 1.0 *wfr*)
+  (f32vec-op! *ws2* '* *wcr* *ws1*)
+  (f32vec-op! *ws3* '* (car *wv-sky*) *wfr*)
+  (f32vec-op! *ws2* '+ *ws2* *ws3*)
+  (f32vec-op! *ws3* '- (car *wv-foam*) *wcr*)
+  (f32vec-op! *ws3* '* *ws3* *wfm*)
+  (f32vec-op! *wcr* '+ *ws2* *ws3*)
+  (f32vec-op! *ws2* '* *wcg* *ws1*)
+  (f32vec-op! *ws3* '* (cadr *wv-sky*) *wfr*)
+  (f32vec-op! *ws2* '+ *ws2* *ws3*)
+  (f32vec-op! *ws3* '- (cadr *wv-foam*) *wcg*)
+  (f32vec-op! *ws3* '* *ws3* *wfm*)
+  (f32vec-op! *wcg* '+ *ws2* *ws3*)
+  (f32vec-op! *ws2* '* *wcb* *ws1*)
+  (f32vec-op! *ws3* '* (caddr *wv-sky*) *wfr*)
+  (f32vec-op! *ws2* '+ *ws2* *ws3*)
+  (f32vec-op! *ws3* '- (caddr *wv-foam*) *wcb*)
+  (f32vec-op! *ws3* '* *ws3* *wfm*)
+  (f32vec-op! *wcb* '+ *ws2* *ws3*)
+  ;; плотные каналы → страйд-буфер RGBA mesh-vc
+  (f32vec-strided-set! *wvc* 4 0 *wcr*)
+  (f32vec-strided-set! *wvc* 4 1 *wcg*)
+  (f32vec-strided-set! *wvc* 4 2 *wcb*)
+  (f32vec-strided-set! *wvc* 4 3 *wca*)
   #t)
 
-;; геометрия воды: подъём вершин волнами (каждый 2-й кадр)
+;; геометрия воды: подъём вершин волнами (каждый 4-й кадр, вместе с VC).
+;; волна = 0.16·sin(1.1x + 2t) + 0.11·sin(1.4z − 1.6t) + 0.06·sin(2.3(x+z) + 3.1t)
 (define (update-water!)
-  (define (vx i) (- (* 2 *wa* (/ i *wn*)) *wa*))
-  (define (vz j) (- (* 2 *wa* (/ j *wn*)) *wa*))
-  (dotimes (i (+ *wn* 1))
-    (dotimes (j (+ *wn* 1))
-      (f32set! *wpos* (+ (* (+ (* i (+ *wn* 1)) j) 3) 1)
-               (wave-y (vx i) (vz j) *t*))))
+  (f32vec-op! *ws1* '+ *wph1* (* 2.0 *t*))
+  (f32vec-op! *ws1* 'sin *ws1*)
+  (f32vec-op! *ws1* '* *ws1* 0.16)
+  (f32vec-op! *ws2* '+ *wph2* (* -1.6 *t*))
+  (f32vec-op! *ws2* 'sin *ws2*)
+  (f32vec-op! *ws2* '* *ws2* 0.11)
+  (f32vec-op! *ws3* '+ *wph3* (* 3.1 *t*))
+  (f32vec-op! *ws3* 'sin *ws3*)
+  (f32vec-op! *ws3* '* *ws3* 0.06)
+  (f32vec-op! *wy* '+ *ws1* *ws2*)
+  (f32vec-op! *wy* '+ *wy* *ws3*)
+  ;; плотная высота → страйд-буфер позиций (y-компоненты)
+  (f32vec-strided-set! *wpos* 3 1 *wy*)
   #t)
 
 ;; ——— PNG-текстуры (scripts/gen_textures.py) ———
@@ -557,6 +641,57 @@
 ;; пучки не качаются — считаем ОДИН раз при загрузке
 (define *tuft-cache* (tuft-insts))
 
+;; ——— чайки: пары крыльев-квадов на орбитах вокруг острова ———
+;; крыло — горизонтальный квад (размах X, хорда Z); инстанс: yaw = −a
+;; ставит хорду по касательной к орбите, roll = ±взмах качает концы.
+;; Квады двусторонние (обе ориентации в индексах) — силуэт виден и снизу.
+(define *bird-n* 7)
+(define (bird-param k)
+  (list (+ 24.0 (* 13.0 (hash2 k 211)))    ; радиус орбиты (вне кромки острова)
+        (+ 8.5 (* 4.0 (hash2 k 213)))     ; высота
+        (* k 0.897)                        ; фаза на орбите
+        (+ 0.55 (* 0.30 (hash2 k 217)))    ; угловая скорость
+        (+ 0.70 (* 0.45 (hash2 k 219)))))  ; размах
+(define *wing-mesh*
+  (let ((pos '()) (idx '()) (vi 0))
+    (define (quad ax ay az bx by bz cx cy cz dx dy dz)
+      (set! pos (append pos (list ax ay az bx by bz cx cy cz dx dy dz)))
+      (set! idx (append idx (list vi (+ vi 1) (+ vi 2)
+                                  vi (+ vi 2) (+ vi 3)
+                                  (+ vi 2) (+ vi 1) vi
+                                  (+ vi 3) (+ vi 2) vi)))
+      (set! vi (+ vi 4)))
+    (quad -0.5 0 -0.25  0.5 0 -0.25  0.5 0 0.25  -0.5 0 0.25)
+    (list (f32-from-list pos) (f32-from-list idx))))
+(define (bird-insts)
+  (let ((acc '()))
+    (define (go k)
+      (if (>= k *bird-n*)
+          acc
+          (let* ((pr (bird-param k))
+                 (r (nth pr 0))
+                 (h (nth pr 1))
+                 (ph (nth pr 2))
+                 (w (nth pr 3))
+                 (s (nth pr 4))
+                 (a (+ ph (* w *t*)))
+                 (x (* r (cos a)))
+                 (z (* r (sin a)))
+                 (flap (* 0.8 (sin (+ (* *t* 9.0) (* k 1.7)))))
+                 (ox (* 0.42 s (cos a)))
+                 (oz (* 0.42 s (sin a)))
+                 (g 0.20))
+            ;; два крыла: центры разведены по радиусу орбиты
+            (set! acc
+                  (append acc
+                          (list (+ x ox) h (+ z oz) s 1.0 (* 0.55 s)
+                                (- a) (- flap) 0 g g (+ g 0.05)
+                                (- x ox) h (- z oz) s 1.0 (* 0.55 s)
+                                (- a) flap 0 g g (+ g 0.05))))
+            (go (+ k 1)))))
+    (go 0)))
+(define *bird-cache* (bird-insts))
+
 ;; ——— облака: медленные билборды высоко вокруг ———
 (define (cloud-mesh)
   ;; горизонтальный квад в XZ — виден снизу с любого азимута орбиты
@@ -679,16 +814,18 @@
 
 ;; ——— небо: 12 полос, тёплый горизонт → глубокий зенит ———
 (define (draw-sky)
-  (define (go i y)
-    (if (>= i 12)
-        #f
-        (let ((k (/ i 11.0)))
-          (draw-rect 0 y *screen-w* 20
-                     (list (- 0.76 (* 0.42 k))
-                           (- 0.84 (* 0.30 k))
-                           (- 0.91 (* 0.09 k))))
-          (go (+ i 1) (+ y 20)))))
-  (go 0 0))
+  ;; 12 полос под ВЫСОТУ экрана (раньше — жёсткие 20px под 320×240)
+  (let ((band (/ *screen-h* 12.0)))
+    (define (go i y)
+      (if (>= i 12)
+          #f
+          (let ((k (/ i 11.0)))
+            (draw-rect 0 y *screen-w* (+ band 0.6)
+                       (list (- 0.76 (* 0.42 k))
+                             (- 0.84 (* 0.30 k))
+                             (- 0.91 (* 0.09 k))))
+            (go (+ i 1) (+ y band)))))
+    (go 0 0)))
 
 ;; солнечное гало: проект точки (eye + dir·80) на экран через mvp
 (define (mvp-project mvp x y z)
@@ -773,6 +910,8 @@
         (draw-gltf *m-lantern-draw*
                    (model-mat -3.4 (+ (isl-h -3.4 3.4) 0.05) 3.4 (* 0.55 *s-lantern*) -0.5)
                    mvp (list 1 1 1) 'глинт))
+    ;; чайки: тёмные силуэты по орбитам (opaque, батч-вершинник)
+    (draw-batch *wing-mesh* *bird-cache* mvp)
     ;; облака (blend, далеко) — в общую прозрачную очередь с водой
     (gpu3d-alpha-blend 0.88)
     (draw-batch-tex *cloud-mesh* *cloud-uv* *tex-cloud* *cloud-cache* mvp)
@@ -795,7 +934,8 @@
   (if (= 0 (mod *frame* 4))
       (begin
         (set! *crown-cache* (crown-insts))
-        (set! *frond-cache* (palm-frond-insts)))
+        (set! *frond-cache* (palm-frond-insts))
+        (set! *bird-cache* (bird-insts)))
       #f)
   (if (= 0 (mod *frame* 12))
       (set! *cloud-cache* (cloud-insts))
@@ -813,12 +953,13 @@
   (set! *t* (+ *t* dt))
   (set! *frame* (+ *frame* 1))
   (refresh-caches!)
-  ;; геометрия волн — каждый 4-й кадр
+  ;; геометрия волн — каждый 4-й кадр (векторный ALU: ~11 вызовов)
   (if (= 0 (mod *frame* 4))
       (update-water!)
       #f)
-  ;; цвет/альфа воды (френель/пена) — каждый 32-й кадр (камера орбитит 0.1 рад/с: ~2.8° за полсекунды)
-  (if (= 0 (mod *frame* 32))
+  ;; цвет/альфа воды (френель/пена) — тем же тиком, что и геометрия:
+  ;; френель зависит от орбиты камеры (0.1 рад/с), пена — от волн
+  (if (= 0 (mod *frame* 4))
       (update-water-vc (list (* 20.5 (cos (* *t* 0.10)))
                              9.6
                              (* 20.5 (sin (* *t* 0.10)))))

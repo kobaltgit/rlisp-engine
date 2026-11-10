@@ -80,7 +80,7 @@ pub struct R3 {
     /// прозрачную очередь (src-alpha блендинг, сорт far→near, без z-записи).
     pub blend: f32,
     /// Прозрачная очередь: собирается непрозрачными вызовами, дренируется
-    /// gpu3d-flush-alpha (сортировка far→near — художник-порядок для крон,
+    /// gpu3d-flush-alpha (сорт far→near — художник-порядок для крон,
     /// воды, облаков).
     pub(crate) transq: Vec<TransTri>,
     /// Режим затенения: false = flat (дефолт, ретро-стиль), true = smooth (сглаженный Фонг).
@@ -106,6 +106,72 @@ pub struct R3 {
     pub shadow_enabled: bool,
     /// Смещение глубины для устранения артефактов (shadow acne).
     pub shadow_bias: f32,
+    /// LUT тумана (этап 9.2): 257 узлов фактора 1-exp(-d·depth) на глубинах
+    /// 0..FOG_SPAN (насыщение ~0.9975); между узлами линейная интерполяция —
+    /// замена exp() на пиксель в растеризаторе. fog_lut_key — снимок
+    /// r3.fog, по которому LUT построена (ленивая пересборка).
+    pub(crate) fog_lut: [f32; 257],
+    pub(crate) fog_lut_key: [f32; 4],
+}
+
+/// Глубина насыщения LUT тумана: density·depth = 6 → фактор ≈ 0.9975.
+const FOG_SPAN_DIV: f32 = 6.0;
+
+/// Ленивая пересборка LUT тумана: вызывается раз на draw-вызов; тесты и
+/// gpu3d-fog меняют r3.fog напрямую — снимок-ключ ловит любое изменение.
+pub(crate) fn fog_lut_sync(r3: &mut R3) {
+    if r3.fog_lut_key == r3.fog {
+        return;
+    }
+    let d = r3.fog[3];
+    let span = if d > 0.0 { FOG_SPAN_DIV / d } else { 1.0 };
+    for (i, v) in r3.fog_lut.iter_mut().enumerate() {
+        *v = fog_factor(d, i as f32 * span / 256.0);
+    }
+    // последний узел — ровно 1: дальше span поверхность полностью в цвете
+    // тумана (точная формула даёт 0.9975 — разница в четверть процента,
+    // зато насыщение байт-в-байт совпадает с exp-путём)
+    r3.fog_lut[256] = 1.0;
+    r3.fog_lut_key = r3.fog;
+}
+
+/// Фактор тумана по LUT (с линейной интерполяцией между узлами).
+#[inline]
+pub(crate) fn fog_lut_lookup(lut: &[f32; 257], density: f32, depth: f32) -> f32 {
+    if density <= 0.0 {
+        return 0.0;
+    }
+    let scale = 256.0 * density / FOG_SPAN_DIV; // depth → узлы
+    let t = (depth * scale).min(255.999);
+    let i = t as usize;
+    lut[i] + (lut[i + 1] - lut[i]) * (t - i as f32)
+}
+
+/// Инкрементальный сканлайн (этап 9.2): диапазон пикселей строки [lo_px,
+/// hi_px], где все три edge-функции ≤ 0 (лицевая сторона после y-flip).
+/// w — значения функций в опорной точке fx0, ax — производные по fx
+/// (wi(fx) = w_i + ax_i·(fx − fx0)): каждое ограничение wi ≤ 0 — полулиния,
+/// пересечение трёх — отрезок. Возвращает (from, to) включительно; from > to —
+/// строка пуста. Набор пикселей совпадает с перебором bbox побитово.
+pub(crate) fn row_span(w: [f32; 3], ax: [f32; 3], fx0: f32, lo_px: i64, hi_px: i64) -> (i64, i64) {
+    let mut lo = f32::NEG_INFINITY;
+    let mut hi = f32::INFINITY;
+    for i in 0..3 {
+        let a = ax[i];
+        if a > 1e-9 {
+            hi = hi.min(fx0 - w[i] / a);
+        } else if a < -1e-9 {
+            lo = lo.max(fx0 - w[i] / a);
+        } else if w[i] > 0.0 {
+            return (1, 0); // ребро параллельно строке и снаружи
+        }
+    }
+    if lo.is_nan() || hi.is_nan() {
+        return (1, 0);
+    }
+    let from = ((lo - 0.5).ceil() as i64).max(lo_px);
+    let to = ((hi - 0.5).floor() as i64).min(hi_px);
+    (from, to)
 }
 
 /// Треугольник прозрачной очереди: экранные вершины со ВСЕМИ атрибутами
@@ -160,6 +226,8 @@ impl R3 {
             shadow_pass: false,
             shadow_enabled: false,
             shadow_bias: 0.005,
+            fog_lut: [0.0; 257],
+            fog_lut_key: [0.7, 0.8, 0.9, 0.0],
         }
     }
 
@@ -1472,6 +1540,7 @@ pub(crate) fn flush_transparent(hal: &mut Hal) -> Result<u64, String> {
     }
     let mut drawn: u64 = 0;
     let Hal { fb, r3, .. } = &mut *hal;
+    fog_lut_sync(r3);
     for t in &q {
         let tex = texcache
             .iter()
@@ -1708,6 +1777,9 @@ fn raster_tris(
     culled: &mut u64,
 ) -> Result<(), String> {
     let n = world.len() / 3;
+    // LUT тумана актуализируется раз на draw-вызов (fog меняется и напрямую
+    // из тестов, и через gpu3d-fog — снимок-ключ ловит любое изменение)
+    fog_lut_sync(r3);
     // скретч-буферы переиспользуются всеми треугольниками (без аллокаций
     // на треугольник в горячем цикле — цена тесселяции ревизии 4)
     let mut poly_buf: Vec<[f32; 17]> = Vec::with_capacity(8);
@@ -1835,6 +1907,8 @@ fn raster_tris(
         let smooth_shading = r3.smooth && world_nrm.is_some();
         let (tu, tv) = (r3.tiling[0], r3.tiling[1]);
 
+        // LUT тумана — локальная копия (без займа r3 в горячем цикле)
+        let lut = r3.fog_lut;
         // вентилятор: (0, k, k+1)
         for kk in 1..pts.len() - 1 {
             let (p0, p1, p2) = (&pts[0], &pts[kk], &pts[kk + 1]);
@@ -1945,213 +2019,272 @@ fn raster_tris(
             } else {
                 None
             };
+
+            // — инкрементальный сканлайн (этап 9.2): вместо перебора bbox с
+            // тремя edge-функциями на каждый пиксель — спан по строке из
+            // полулиний wi ≤ 0 и пошаговые атрибуты: числители N_q = Σ wi·qi
+            // аффинны вдоль строки вместе с wi, знаменатель Σ wi инвариантен
+            // (площадь) — пиксель = одно деление вместо семи —
+            let ax = [p1.sy - p2.sy, p2.sy - p0.sy, p0.sy - p1.sy];
+            const A_SZ: usize = 0;
+            const A_IW: usize = 1;
+            const A_U: usize = 2;
+            const A_V: usize = 3;
+            const A_WX: usize = 4;
+            const A_WY: usize = 5;
+            const A_WZ: usize = 6;
+            const A_R: usize = 7;
+            const A_G: usize = 8;
+            const A_B: usize = 9;
+            const A_A: usize = 10;
+            const A_NX: usize = 11;
+            const A_NY: usize = 12;
+            const A_NZ: usize = 13;
+            const NA: usize = 14;
+            let q: [[f32; 3]; NA] = [
+                [p0.sz, p1.sz, p2.sz],
+                [p0.iw, p1.iw, p2.iw],
+                [p0.uq, p1.uq, p2.uq],
+                [p0.vq, p1.vq, p2.vq],
+                [p0.wxq, p1.wxq, p2.wxq],
+                [p0.wyq, p1.wyq, p2.wyq],
+                [p0.wzq, p1.wzq, p2.wzq],
+                [p0.rq, p1.rq, p2.rq],
+                [p0.gq, p1.gq, p2.gq],
+                [p0.bq, p1.bq, p2.bq],
+                [p0.aq, p1.aq, p2.aq],
+                [p0.nxq, p1.nxq, p2.nxq],
+                [p0.nyq, p1.nyq, p2.nyq],
+                [p0.nzq, p1.nzq, p2.nzq],
+            ];
             for py in miny..=maxy {
-                let row = py as usize * w;
                 let fy = py as f32 + 0.5;
-                for px in minx..=maxx {
-                    let fx = px as f32 + 0.5;
-                    let w0 = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx, fy);
-                    let w1 = edge(p2.sx, p2.sy, p0.sx, p0.sy, fx, fy);
-                    let w2 = edge(p0.sx, p0.sy, p1.sx, p1.sy, fx, fy);
-                    // площадь < 0 для лицевых → пиксель внутри, когда все веса <= 0
-                    if w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0 {
-                        let sum = w0 + w1 + w2;
-                        let z = if sum.abs() < 1e-9 {
-                            p0.sz
-                        } else {
-                            (w0 * p0.sz + w1 * p1.sz + w2 * p2.sz) / sum
-                        };
-                        let pi = row + px as usize;
-                        if z < r3.zbuf[pi] {
-                            // перспектива-корректный 1/w пикселя; истинная
-                            // глубина = 1/(1/w) = w_clip = -z_view (перспектива
-                            // render3d.lisp), она же — глубина тумана
-                            let iwp = (w0 * p0.iw + w1 * p1.iw + w2 * p2.iw) / sum;
-                            if iwp.abs() <= 1e-12 {
-                                // деградированный iw: z пишется (opaque), цвет нет
-                                if !blend_pass {
-                                    r3.zbuf[pi] = z;
-                                }
-                                continue;
-                            }
-                            // сглаженные нормали и шейдинг Фонга (этап: per-pixel normal)
-                            let (pix_nnrm, pix_ndl) = if smooth_shading {
-                                let nx = ((w0 * p0.nxq + w1 * p1.nxq + w2 * p2.nxq) / sum) / iwp;
-                                let ny = ((w0 * p0.nyq + w1 * p1.nyq + w2 * p2.nyq) / sum) / iwp;
-                                let nz = ((w0 * p0.nzq + w1 * p1.nzq + w2 * p2.nzq) / sum) / iwp;
-                                let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
-                                if nlen < 1e-9 {
-                                    (nnrm, if nl < 1e-9 { 0.0 } else { dot3(&nnrm, light) })
-                                } else {
-                                    let inv_nlen = 1.0 / nlen;
-                                    let norm = [nx * inv_nlen, ny * inv_nlen, nz * inv_nlen];
-                                    let mut ndl = dot3(&norm, light);
-                                    if blend_pass && ndl < 0.0 {
-                                        ndl = -ndl;
-                                    }
-                                    (norm, ndl)
-                                }
-                            } else {
-                                let mut ndl = if nl < 1e-9 { 0.0 } else { dot3(&nnrm, light) };
-                                if blend_pass && ndl < 0.0 {
-                                    ndl = -ndl;
-                                }
-                                (nnrm, ndl)
-                            };
-
-                            let need_world_pos = spec_on || r3.shadow_enabled || !r3.point_lights.is_empty();
-                            let (wx, wy, wz) = if need_world_pos {
-                                (
-                                    ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp,
-                                    ((w0 * p0.wyq + w1 * p1.wyq + w2 * p2.wyq) / sum) / iwp,
-                                    ((w0 * p0.wzq + w1 * p1.wzq + w2 * p2.wzq) / sum) / iwp,
-                                )
-                            } else {
-                                (0.0, 0.0, 0.0)
-                            };
-
-                            let shadow_factor = if r3.shadow_enabled {
-                                shadow_sample(r3, wx, wy, wz, r3.shadow_bias)
-                            } else {
-                                1.0
-                            };
-
-                            let dir_diffuse = diffuse * pix_ndl.max(0.0) * shadow_factor;
-                            let dir_shade = (ambient + dir_diffuse).clamp(0.0, 1.0);
-
-                            // блик Blinn-Phong: half-vector на
-                            // перспектива-корректной мировой позиции пикселя
-                            let s = if spec_on {
-                                let v = [r3.view[0] - wx, r3.view[1] - wy, r3.view[2] - wz];
-                                let vl = dot3(&v, &v).sqrt().max(1e-9);
-                                let hv = [
-                                    light[0] + v[0] / vl,
-                                    light[1] + v[1] / vl,
-                                    light[2] + v[2] / vl,
-                                ];
-                                let hl = dot3(&hv, &hv).sqrt().max(1e-9);
-                                spec_highlight(
-                                    dot3(&pix_nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
-                                    shininess,
-                                    spec,
-                                ) * shadow_factor
-                            } else {
-                                0.0
-                            };
-
-                            let (pt_diff, pt_spec) = compute_point_lights(
-                                &r3.point_lights,
-                                &r3.view,
-                                wx,
-                                wy,
-                                wz,
-                                &pix_nnrm,
-                                blend_pass,
-                                spec_on,
-                                shininess,
-                                spec,
-                            );
-
-                            // туман (этап 7): фактор по истинной глубине,
-                            // смешение ПОСЛЕ шейдинга и блика
-                            let fogf = if fog_on {
-                                fog_factor(fog_density, 1.0 / iwp)
-                            } else {
-                                0.0
-                            };
-
-                            // базовый цвет пикселя: per-vertex градиент (этап 9)
-                            // или равномерный цвет грани × Lambert / Phong + point lights
-                            let (mut c0, mut c1, mut c2) = if !vc_rgb {
-                                let f = 1.0 / iwp;
-                                let rq = ((w0 * p0.rq + w1 * p1.rq + w2 * p2.rq) / sum) * f;
-                                let gq = ((w0 * p0.gq + w1 * p1.gq + w2 * p2.gq) / sum) * f;
-                                let bq = ((w0 * p0.bq + w1 * p1.bq + w2 * p2.bq) / sum) * f;
-                                (
-                                    rq * dir_shade + rq * pt_diff[0],
-                                    gq * dir_shade + gq * pt_diff[1],
-                                    bq * dir_shade + bq * pt_diff[2],
-                                )
-                            } else {
-                                (
-                                    tr * dir_shade + tr * pt_diff[0],
-                                    tg * dir_shade + tg * pt_diff[1],
-                                    tb * dir_shade + tb * pt_diff[2],
-                                )
-                            };
-                            let mut al = if blend_pass {
-                                let f = 1.0 / iwp;
-                                (((w0 * p0.aq + w1 * p1.aq + w2 * p2.aq) / sum) * f).clamp(0.0, 1.0)
-                            } else {
-                                1.0
-                            };
-                            if let Some(t) = tex {
-                                // перспектива-корректный UV: (u/w)/(1/w)
-                                let uq = (w0 * p0.uq + w1 * p1.uq + w2 * p2.uq) / sum;
-                                let vq = (w0 * p0.vq + w1 * p1.vq + w2 * p2.vq) / sum;
-                                // тайлинг (этап 7): (1,1) — clamp к краю,
-                                // иначе repeat через fract
-                                let uf = tiled_coord(uq / iwp, tu);
-                                let vf = tiled_coord(vq / iwp, tv);
-                                let texel = sample_tex(
-                                    t,
-                                    r3.tex_filter,
-                                    r3.tex_mipmaps,
-                                    tex_grad.as_ref(),
-                                    uq,
-                                    vq,
-                                    iwp,
-                                    uf,
-                                    vf,
-                                );
-                                // alpha-test (этап 7, только opaque): discard
-                                // ДО записи z — за дыркой видно то, что позади
-                                if alpha_on && !blend_pass && !alpha_keep(texel[3], alpha_thr) {
-                                    continue;
-                                }
-                                if blend_pass {
-                                    al *= texel[3] as f32 / 255.0;
-                                    if al <= 0.004 {
-                                        continue; // полностью прозрачно
-                                    }
-                                }
-                                c0 *= texel[0] as f32 / 255.0;
-                                c1 *= texel[1] as f32 / 255.0;
-                                c2 *= texel[2] as f32 / 255.0;
-                            } else if blend_pass && al <= 0.004 {
-                                continue;
-                            }
-                            if spec_on || pt_spec[0] > 0.0 || pt_spec[1] > 0.0 || pt_spec[2] > 0.0 {
-                                c0 = (c0 + s + pt_spec[0]).min(1.0);
-                                c1 = (c1 + s + pt_spec[1]).min(1.0);
-                                c2 = (c2 + s + pt_spec[2]).min(1.0);
-                            }
-                            if fog_on {
-                                let g = 1.0 - fogf;
-                                c0 = c0 * g + fog_r * fogf;
-                                c1 = c1 * g + fog_g * fogf;
-                                c2 = c2 * g + fog_b * fogf;
-                            }
-                            let o = pi * 4;
-                            if blend_pass {
-                                // src-alpha блендинг поверх кадра; z-буфер
-                                // НЕ пишется (порядок даёт сорт far→near)
-                                let dr = fb[o] as f32 / 255.0;
-                                let dg = fb[o + 1] as f32 / 255.0;
-                                let db = fb[o + 2] as f32 / 255.0;
-                                let iv = 1.0 - al;
-                                fb[o] = col((c0 * al + dr * iv) as f64);
-                                fb[o + 1] = col((c1 * al + dg * iv) as f64);
-                                fb[o + 2] = col((c2 * al + db * iv) as f64);
-                            } else {
-                                r3.zbuf[pi] = z;
-                                fb[o] = col(c0 as f64);
-                                fb[o + 1] = col(c1 as f64);
-                                fb[o + 2] = col(c2 as f64);
-                            }
-                            fb[o + 3] = 255;
-                        }
+                let fx0 = minx as f32 + 0.5;
+                // edge-функции строки в опорной точке (левый край bbox)
+                let w0r = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx0, fy);
+                let w1r = edge(p2.sx, p2.sy, p0.sx, p0.sy, fx0, fy);
+                let w2r = edge(p0.sx, p0.sy, p1.sx, p1.sy, fx0, fy);
+                let (from, to) = row_span([w0r, w1r, w2r], ax, fx0, minx, maxx);
+                if from > to {
+                    continue;
+                }
+                let inv_d = 1.0 / (w0r + w1r + w2r);
+                let wr = [w0r, w1r, w2r];
+                let mut n = [0.0f32; NA];
+                let mut dn = [0.0f32; NA];
+                for a in 0..NA {
+                    n[a] = wr[0] * q[a][0] + wr[1] * q[a][1] + wr[2] * q[a][2];
+                    dn[a] = ax[0] * q[a][0] + ax[1] * q[a][1] + ax[2] * q[a][2];
+                }
+                let skip = (from - minx) as f32;
+                if skip != 0.0 {
+                    for a in 0..NA {
+                        n[a] += dn[a] * skip;
                     }
+                }
+                let row = py as usize * w;
+                for px in from..=to {
+                    // z-тест ДО атрибутов: окклюдированный пиксель платит
+                    // только за z, шаг и continue (шаг обязателен — следующий
+                    // пиксель строки требует шагнувших числителей)
+                    let z = n[A_SZ] * inv_d;
+                    let pi = row + px as usize;
+                    if z >= r3.zbuf[pi] {
+                        for a in 0..NA {
+                            n[a] += dn[a];
+                        }
+                        continue;
+                    }
+                    // видимый: значения ЭТОГО пикселя — чтение ДО шага
+                    // (без «отката» n−dn: на клипнутых вершинах атрибуты
+                    // ~1e4-1e5, вычитание близких чисел топит точность f32)
+                    let iwp = n[A_IW] * inv_d;
+                    let uq = n[A_U] * inv_d;
+                    let vq = n[A_V] * inv_d;
+                    let wxq = n[A_WX] * inv_d;
+                    let wyq = n[A_WY] * inv_d;
+                    let wzq = n[A_WZ] * inv_d;
+                    let rq = n[A_R] * inv_d;
+                    let gq = n[A_G] * inv_d;
+                    let bq = n[A_B] * inv_d;
+                    let alq = n[A_A] * inv_d;
+                    let nxq = n[A_NX] * inv_d;
+                    let nyq = n[A_NY] * inv_d;
+                    let nzq = n[A_NZ] * inv_d;
+                    for a in 0..NA {
+                        n[a] += dn[a];
+                    }
+                    if iwp.abs() <= 1e-12 {
+                        // деградированный iw: z пишется (opaque), цвет нет
+                        if !blend_pass {
+                            r3.zbuf[pi] = z;
+                        }
+                        continue;
+                    }
+                    // истинная глубина = 1/(1/w) = w_clip — она же глубина тумана
+                    let f = 1.0 / iwp;
+
+                    // сглаженные нормали и шейдинг Фонга (этап: per-pixel normal)
+                    let (pix_nnrm, pix_ndl) = if smooth_shading {
+                        let nx = nxq * f;
+                        let ny = nyq * f;
+                        let nz = nzq * f;
+                        let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+                        if nlen < 1e-9 {
+                            (nnrm, if nl < 1e-9 { 0.0 } else { dot3(&nnrm, light) })
+                        } else {
+                            let inv_nlen = 1.0 / nlen;
+                            let norm = [nx * inv_nlen, ny * inv_nlen, nz * inv_nlen];
+                            let mut ndl = dot3(&norm, light);
+                            if blend_pass && ndl < 0.0 {
+                                ndl = -ndl;
+                            }
+                            (norm, ndl)
+                        }
+                    } else {
+                        let mut ndl = if nl < 1e-9 { 0.0 } else { dot3(&nnrm, light) };
+                        if blend_pass && ndl < 0.0 {
+                            ndl = -ndl;
+                        }
+                        (nnrm, ndl)
+                    };
+
+                    let need_world_pos = spec_on || r3.shadow_enabled || !r3.point_lights.is_empty();
+                    let (wx, wy, wz) = if need_world_pos {
+                        (wxq * f, wyq * f, wzq * f)
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    };
+
+                    let shadow_factor = if r3.shadow_enabled {
+                        shadow_sample(r3, wx, wy, wz, r3.shadow_bias)
+                    } else {
+                        1.0
+                    };
+
+                    let dir_diffuse = diffuse * pix_ndl.max(0.0) * shadow_factor;
+                    let dir_shade = (ambient + dir_diffuse).clamp(0.0, 1.0);
+
+                    // блик Blinn-Phong (этап 7): half-vector на
+                    // перспектива-корректной мировой позиции пикселя
+                    let s = if spec_on {
+                        let v = [r3.view[0] - wx, r3.view[1] - wy, r3.view[2] - wz];
+                        let vl = dot3(&v, &v).sqrt().max(1e-9);
+                        let hv = [
+                            light[0] + v[0] / vl,
+                            light[1] + v[1] / vl,
+                            light[2] + v[2] / vl,
+                        ];
+                        let hl = dot3(&hv, &hv).sqrt().max(1e-9);
+                        spec_highlight(
+                            dot3(&pix_nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
+                            shininess,
+                            spec,
+                        ) * shadow_factor
+                    } else {
+                        0.0
+                    };
+
+                    let (pt_diff, pt_spec) = compute_point_lights(
+                        &r3.point_lights,
+                        &r3.view,
+                        wx,
+                        wy,
+                        wz,
+                        &pix_nnrm,
+                        blend_pass,
+                        spec_on,
+                        shininess,
+                        spec,
+                    );
+
+                    // туман (этап 7): фактор по LUT (интерполяция между
+                    // узлами), смешение ПОСЛЕ шейдинга и блика
+                    let fogf = if fog_on {
+                        fog_lut_lookup(&lut, fog_density, f)
+                    } else {
+                        0.0
+                    };
+
+                    // базовый цвет пикселя: per-vertex градиент (этап 9)
+                    // или равномерный цвет грани × Lambert / Phong + point lights
+                    let (mut c0, mut c1, mut c2) = if !vc_rgb {
+                        (
+                            rq * f * dir_shade + rq * f * pt_diff[0],
+                            gq * f * dir_shade + gq * f * pt_diff[1],
+                            bq * f * dir_shade + bq * f * pt_diff[2],
+                        )
+                    } else {
+                        (
+                            tr * dir_shade + tr * pt_diff[0],
+                            tg * dir_shade + tg * pt_diff[1],
+                            tb * dir_shade + tb * pt_diff[2],
+                        )
+                    };
+                    let mut al = if blend_pass { alq.clamp(0.0, 1.0) } else { 1.0 };
+                    if let Some(t) = tex {
+                        // перспектива-корректный UV: (u/w)/(1/w)
+                        // тайлинг (этап 7): (1,1) — clamp к краю,
+                        // иначе repeat через fract
+                        let uf = tiled_coord(uq * f, tu);
+                        let vf = tiled_coord(vq * f, tv);
+                        let texel = sample_tex(
+                            t,
+                            r3.tex_filter,
+                            r3.tex_mipmaps,
+                            tex_grad.as_ref(),
+                            uq,
+                            vq,
+                            iwp,
+                            uf,
+                            vf,
+                        );
+                        // alpha-test (этап 7, только opaque): discard
+                        // ДО записи z — за дыркой видно то, что позади
+                        if alpha_on && !blend_pass && !alpha_keep(texel[3], alpha_thr) {
+                            continue;
+                        }
+                        if blend_pass {
+                            al *= texel[3] as f32 / 255.0;
+                            if al <= 0.004 {
+                                continue; // полностью прозрачно
+                            }
+                        }
+                        c0 *= texel[0] as f32 / 255.0;
+                        c1 *= texel[1] as f32 / 255.0;
+                        c2 *= texel[2] as f32 / 255.0;
+                    } else if blend_pass && al <= 0.004 {
+                        continue;
+                    }
+                    if spec_on || pt_spec[0] > 0.0 || pt_spec[1] > 0.0 || pt_spec[2] > 0.0 {
+                        c0 = (c0 + s + pt_spec[0]).min(1.0);
+                        c1 = (c1 + s + pt_spec[1]).min(1.0);
+                        c2 = (c2 + s + pt_spec[2]).min(1.0);
+                    }
+                    if fog_on {
+                        let g = 1.0 - fogf;
+                        c0 = c0 * g + fog_r * fogf;
+                        c1 = c1 * g + fog_g * fogf;
+                        c2 = c2 * g + fog_b * fogf;
+                    }
+                    let o = pi * 4;
+                    if blend_pass {
+                        // src-alpha блендинг поверх кадра; z-буфер
+                        // НЕ пишется (порядок даёт сорт far→near)
+                        let dr = fb[o] as f32 / 255.0;
+                        let dg = fb[o + 1] as f32 / 255.0;
+                        let db = fb[o + 2] as f32 / 255.0;
+                        let iv = 1.0 - al;
+                        fb[o] = col((c0 * al + dr * iv) as f64);
+                        fb[o + 1] = col((c1 * al + dg * iv) as f64);
+                        fb[o + 2] = col((c2 * al + db * iv) as f64);
+                    } else {
+                        r3.zbuf[pi] = z;
+                        fb[o] = col(c0 as f64);
+                        fb[o + 1] = col(c1 as f64);
+                        fb[o + 2] = col(c2 as f64);
+                    }
+                    fb[o + 3] = 255;
                 }
             }
             *drawn += 1;
@@ -3652,5 +3785,248 @@ mod tests {
         // Точка на границе кастера (~1.0, 0, 0) с PCF 2x2 даёт мягкий переход
         let s_edge = shadow_sample(&r3, 1.0, 0.0, 0.0, 0.005);
         assert!(s_edge >= 0.0 && s_edge <= 1.0, "мягкая граница тени PCF: {}", s_edge);
+    }
+
+    // ——— этап 9.2: инкрементальный сканлайн + LUT тумана ———
+
+    fn тест_вершина(sx: f32, sy: f32, iw: f32) -> Vtx {
+        Vtx {
+            sx,
+            sy,
+            sz: sx * 0.01,
+            uq: sx * iw,
+            vq: sy * iw,
+            iw,
+            wxq: sx * iw,
+            wyq: 0.0,
+            wzq: sy * iw,
+            aq: iw,
+            rq: sx * iw,
+            gq: 0.5 * iw,
+            bq: 0.0,
+            nxq: 0.0,
+            nyq: 0.0,
+            nzq: iw,
+        }
+    }
+
+    #[test]
+    fn сканлайн_спан_совпадает_с_перебором_bbox() {
+        // прямоугольный, тупой, вертикальное ребро, «игла»; набор пикселей
+        // row_span обязан совпадать с перебором edge-функций на пиксель
+        let заготовки: Vec<[Vtx; 3]> = vec![
+            [
+                тест_вершина(2.0, 1.0, 1.0),
+                тест_вершина(9.0, 3.0, 1.0),
+                тест_вершина(4.0, 7.0, 1.0),
+            ],
+            [
+                тест_вершина(0.0, 0.0, 1.0),
+                тест_вершина(7.0, 6.5, 1.0),
+                тест_вершина(1.0, 7.0, 1.0),
+            ],
+            [
+                тест_вершина(3.0, 0.0, 1.0),
+                тест_вершина(3.0, 7.0, 1.0),
+                тест_вершина(8.0, 4.0, 1.0),
+            ],
+            [
+                тест_вершина(1.0, 3.0, 1.0),
+                тест_вершина(9.0, 3.4, 1.0),
+                тест_вершина(5.0, 3.6, 1.0),
+            ],
+        ];
+        for з in &заготовки {
+            let mut tri = *з;
+            // лицевая ориентация (area < 0) — конвенция opaque-прохода
+            let area = edge(
+                tri[0].sx, tri[0].sy, tri[1].sx, tri[1].sy, tri[2].sx, tri[2].sy,
+            );
+            if area > 0.0 {
+                tri.swap(1, 2);
+            }
+            let (p0, p1, p2) = (&tri[0], &tri[1], &tri[2]);
+            let ax = [p1.sy - p2.sy, p2.sy - p0.sy, p0.sy - p1.sy];
+            let minx = (p0.sx.min(p1.sx).min(p2.sx).floor() as i64).max(0);
+            let maxx = (p0.sx.max(p1.sx).max(p2.sx).ceil() as i64).min(7);
+            let miny = (p0.sy.min(p1.sy).min(p2.sy).floor() as i64).max(0);
+            let maxy = (p0.sy.max(p1.sy).max(p2.sy).ceil() as i64).min(7);
+            for py in miny..=maxy {
+                let fy = py as f32 + 0.5;
+                let fx0 = minx as f32 + 0.5;
+                let w0r = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx0, fy);
+                let w1r = edge(p2.sx, p2.sy, p0.sx, p0.sy, fx0, fy);
+                let w2r = edge(p0.sx, p0.sy, p1.sx, p1.sy, fx0, fy);
+                let (from, to) = row_span([w0r, w1r, w2r], ax, fx0, minx, maxx);
+                for px in minx..=maxx {
+                    let fx = px as f32 + 0.5;
+                    let brute = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx, fy) <= 0.0
+                        && edge(p2.sx, p2.sy, p0.sx, p0.sy, fx, fy) <= 0.0
+                        && edge(p0.sx, p0.sy, p1.sx, p1.sy, fx, fy) <= 0.0;
+                    assert_eq!(
+                        from <= px && px <= to,
+                        brute,
+                        "строка {} пиксель {}: span ({},{})",
+                        py,
+                        px,
+                        from,
+                        to
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn сумма_edge_функций_инвариантна_и_равна_площади() {
+        // знаменатель барицентрика — константа треугольника: это даёт один
+        // делитель на строку вместо одного на пиксель
+        let tri = [
+            тест_вершина(1.0, 2.0, 1.0),
+            тест_вершина(8.0, 3.0, 1.0),
+            тест_вершина(2.5, 7.0, 1.0),
+        ];
+        let (p0, p1, p2) = (&tri[0], &tri[1], &tri[2]);
+        let area = edge(p0.sx, p0.sy, p1.sx, p1.sy, p2.sx, p2.sy);
+        for (fx, fy) in [(3.5, 3.5), (0.5, 0.5), (9.5, 8.5), (5.2, 4.9)] {
+            let s = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx, fy)
+                + edge(p2.sx, p2.sy, p0.sx, p0.sy, fx, fy)
+                + edge(p0.sx, p0.sy, p1.sx, p1.sy, fx, fy);
+            assert!(близко(s, area), "s={} area={}", s, area);
+        }
+    }
+
+    #[test]
+    fn сканлайн_атрибуты_совпадают_с_барицентрикой() {
+        // пошаговые числители N_q·inv_d обязаны давать те же значения, что
+        // прямой барицентрик в каждом пикселе
+        let mut tri = [
+            тест_вершина(1.3, 0.7, 0.9),
+            тест_вершина(7.9, 2.2, 1.1),
+            тест_вершина(3.4, 6.8, 0.8),
+        ];
+        let area = edge(
+            tri[0].sx, tri[0].sy, tri[1].sx, tri[1].sy, tri[2].sx, tri[2].sy,
+        );
+        if area > 0.0 {
+            tri.swap(1, 2);
+        }
+        let (p0, p1, p2) = (&tri[0], &tri[1], &tri[2]);
+        let ax = [p1.sy - p2.sy, p2.sy - p0.sy, p0.sy - p1.sy];
+        let minx = (p0.sx.min(p1.sx).min(p2.sx).floor() as i64).max(0);
+        let maxx = (p0.sx.max(p1.sx).max(p2.sx).ceil() as i64).min(7);
+        let miny = (p0.sy.min(p1.sy).min(p2.sy).floor() as i64).max(0);
+        let maxy = (p0.sy.max(p1.sy).max(p2.sy).ceil() as i64).min(7);
+        const NA: usize = 11;
+        let q: [[f32; 3]; NA] = [
+            [p0.sz, p1.sz, p2.sz],
+            [p0.iw, p1.iw, p2.iw],
+            [p0.uq, p1.uq, p2.uq],
+            [p0.vq, p1.vq, p2.vq],
+            [p0.wxq, p1.wxq, p2.wxq],
+            [p0.wyq, p1.wyq, p2.wyq],
+            [p0.wzq, p1.wzq, p2.wzq],
+            [p0.rq, p1.rq, p2.rq],
+            [p0.gq, p1.gq, p2.gq],
+            [p0.bq, p1.bq, p2.bq],
+            [p0.aq, p1.aq, p2.aq],
+        ];
+        let mut проверено = 0;
+        for py in miny..=maxy {
+            let fy = py as f32 + 0.5;
+            let fx0 = minx as f32 + 0.5;
+            let w0r = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx0, fy);
+            let w1r = edge(p2.sx, p2.sy, p0.sx, p0.sy, fx0, fy);
+            let w2r = edge(p0.sx, p0.sy, p1.sx, p1.sy, fx0, fy);
+            let (from, to) = row_span([w0r, w1r, w2r], ax, fx0, minx, maxx);
+            if from > to {
+                continue;
+            }
+            let inv_d = 1.0 / (w0r + w1r + w2r);
+            let wr = [w0r, w1r, w2r];
+            let mut n = [0.0f32; NA];
+            let mut dn = [0.0f32; NA];
+            for a in 0..NA {
+                n[a] = wr[0] * q[a][0] + wr[1] * q[a][1] + wr[2] * q[a][2];
+                dn[a] = ax[0] * q[a][0] + ax[1] * q[a][1] + ax[2] * q[a][2];
+            }
+            let skip = (from - minx) as f32;
+            for a in 0..NA {
+                n[a] += dn[a] * skip;
+            }
+            for px in from..=to {
+                let fx = px as f32 + 0.5;
+                let w0 = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx, fy);
+                let w1 = edge(p2.sx, p2.sy, p0.sx, p0.sy, fx, fy);
+                let w2 = edge(p0.sx, p0.sy, p1.sx, p1.sy, fx, fy);
+                let sum = w0 + w1 + w2;
+                for a in 0..NA {
+                    let прямой = (w0 * q[a][0] + w1 * q[a][1] + w2 * q[a][2]) / sum;
+                    assert!(
+                        близко(n[a] * inv_d, прямой),
+                        "атрибут {} пиксель ({},{}): {} против {}",
+                        a,
+                        px,
+                        py,
+                        n[a] * inv_d,
+                        прямой
+                    );
+                }
+                проверено += 1;
+                for a in 0..NA {
+                    n[a] += dn[a];
+                }
+            }
+        }
+        assert!(проверено > 0, "спан пуст — тест ничего не проверил");
+    }
+
+    #[test]
+    fn туман_lut_близок_к_точной_формуле() {
+        let mut r3 = R3::new();
+        r3.fog = [0.7, 0.8, 0.9, 0.05];
+        fog_lut_sync(&mut r3);
+        assert!(близко(r3.fog_lut[0], 0.0));
+        // монотонность и насыщение к 1
+        for i in 0..256 {
+            assert!(r3.fog_lut[i + 1] >= r3.fog_lut[i]);
+        }
+        assert!(r3.fog_lut[256] > 0.99);
+        // интерполяция между узлами неотличима от точной формулы (зона до
+        // последнего узла; на финальном интервале LUT дотягивается до 1.0,
+        // тогда как точная формула ползёт к 0.9975 — расхождение ≤ 0.25%
+        // блендинга, невизуально)
+        let mut max_err = 0.0f32;
+        for k in 0..=238 {
+            let depth = k as f32 * 0.5;
+            let точный = fog_factor(0.05, depth);
+            let через_lut = fog_lut_lookup(&r3.fog_lut, 0.05, depth);
+            max_err = max_err.max((точный - через_lut).abs());
+        }
+        assert!(max_err < 1e-3, "max_err = {}", max_err);
+        // хвост за span: LUT накрывает точную кривую и не выше 1
+        for k in 239..=400 {
+            let depth = k as f32 * 0.5;
+            let точный = fog_factor(0.05, depth);
+            let через_lut = fog_lut_lookup(&r3.fog_lut, 0.05, depth);
+            assert!(
+                через_lut >= точный - 1e-3 && через_lut <= 1.0,
+                "depth {}: {} против {}",
+                depth,
+                через_lut,
+                точный
+            );
+        }
+        // density 0 — тумана нет
+        assert!(близко(fog_lut_lookup(&r3.fog_lut, 0.0, 50.0), 0.0));
+        // смена fog лениво перестраивает LUT (снимок-ключ)
+        r3.fog = [0.1, 0.1, 0.1, 0.2];
+        fog_lut_sync(&mut r3);
+        // depth 25 — внутри span (depth 30 = ровно span: там LUT = 1.0,
+        // точная формула 0.9975 — семантика насыщения, см. хвост выше)
+        assert!(близко(
+            fog_lut_lookup(&r3.fog_lut, 0.2, 25.0),
+            fog_factor(0.2, 25.0)
+        ));
     }
 }

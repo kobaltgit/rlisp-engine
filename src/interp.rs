@@ -1346,23 +1346,109 @@ pub fn resolve_path(p: &str, root: &Path) -> PathBuf {
     c1
 }
 
+/// wasm-песочница: Lisp-исходники, встроенные в бинарь (fs недоступен).
+/// static + экспорт-зонд в wasm.rs держат данные живыми против DCE.
+#[cfg(target_arch = "wasm32")]
+pub static EMBEDDED_LISP: &[(&str, &str)] = &[
+    ("core.lisp", include_str!("../assets/lisp/core.lisp")),
+    ("ecs.lisp", include_str!("../assets/lisp/ecs.lisp")),
+    ("editor.lisp", include_str!("../assets/lisp/editor.lisp")),
+    ("font.lisp", include_str!("../assets/lisp/font.lisp")),
+    ("game.lisp", include_str!("../assets/lisp/game.lisp")),
+    ("game3d.lisp", include_str!("../assets/lisp/game3d.lisp")),
+    (
+        "graphics.lisp",
+        include_str!("../assets/lisp/graphics.lisp"),
+    ),
+    ("input.lisp", include_str!("../assets/lisp/input.lisp")),
+    ("island.lisp", include_str!("../assets/lisp/island.lisp")),
+    (
+        "load-gltf.lisp",
+        include_str!("../assets/lisp/load-gltf.lisp"),
+    ),
+    ("main.lisp", include_str!("../assets/lisp/main.lisp")),
+    ("main3d.lisp", include_str!("../assets/lisp/main3d.lisp")),
+    (
+        "main_island.lisp",
+        include_str!("../assets/lisp/main_island.lisp"),
+    ),
+    (
+        "main_physpoly.lisp",
+        include_str!("../assets/lisp/main_physpoly.lisp"),
+    ),
+    (
+        "materials.lisp",
+        include_str!("../assets/lisp/materials.lisp"),
+    ),
+    (
+        "phys_poly.lisp",
+        include_str!("../assets/lisp/phys_poly.lisp"),
+    ),
+    ("physics.lisp", include_str!("../assets/lisp/physics.lisp")),
+    (
+        "render3d.lisp",
+        include_str!("../assets/lisp/render3d.lisp"),
+    ),
+    (
+        "textures.lisp",
+        include_str!("../assets/lisp/textures.lisp"),
+    ),
+];
+
+#[cfg(target_arch = "wasm32")]
+pub fn wasm_embedded_file(name: &str) -> &'static str {
+    EMBEDDED_LISP
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+        .unwrap_or("")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_embedded(name: &str) -> Option<&'static str> {
+    EMBEDDED_LISP
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+}
+
 pub fn load_file(path: &Path, ctx: &CoreCtx) -> Result<(), String> {
-    let src =
-        std::fs::read_to_string(path).map_err(|e| format!("load {}: {}", path.display(), e))?;
-    let prog = parse_program(&src).map_err(|e| format!("{}: {}", path.display(), e))?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            if let Some(src) = wasm_embedded(name) {
+                return load_source(src, name, ctx);
+            }
+        }
+        return Err(format!(
+            "load: файл не встроен в песочницу: {}",
+            path.display()
+        ));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let src =
+            std::fs::read_to_string(path).map_err(|e| format!("load {}: {}", path.display(), e))?;
+        {
+            let mut reg = ctx.registry.borrow_mut();
+            let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if !reg.contains(&canon) {
+                reg.push(canon);
+            }
+        }
+        load_source(&src, &path.display().to_string(), ctx)
+    }
+}
+
+fn load_source(src: &str, label: &str, ctx: &CoreCtx) -> Result<(), String> {
+    let prog = parse_program(src).map_err(|e| format!("{}: {}", label, e))?;
+
     // Формы живут до конца загрузки (могут содержать Cons-литералы) —
     // защищаем их от сборки на границах форм.
     let _pin = gc::pin(prog.clone());
-    {
-        let mut reg = ctx.registry.borrow_mut();
-        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        if !reg.contains(&canon) {
-            reg.push(canon);
-        }
-    }
     let g = *ctx.global.borrow();
     for (i, e) in prog.iter().enumerate() {
-        eval(e, g, 0).map_err(|err| format!("{}: форма {}: {}", path.display(), i + 1, err))?;
+        eval(e, g, 0).map_err(|err| format!("{}: форма {}: {}", label, i + 1, err))?;
         // граница формы: авто-сборка по порогу/флагу (стек eval пуст)
         gc::maybe_collect(&[g], &[]);
     }
@@ -1381,6 +1467,23 @@ pub fn set_mcp_quiet(on: bool) {
     MCP_QUIET.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static OUT_SINK: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+}
+
+/// wasm-песочница: дренировать накопленный вывод print/display/newline
+#[cfg(target_arch = "wasm32")]
+pub fn take_out_sink() -> String {
+    OUT_SINK.with(|o| std::mem::take(&mut *o.borrow_mut()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn out_line_stdout(s: &str) {
+    OUT_SINK.with(|o| o.borrow_mut().push_str(s));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn out_line_stdout(s: &str) {
     if MCP_QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         eprint!("{}", s);
@@ -1624,7 +1727,10 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
     });
     def(env, "number?", |args| {
         need(args, 1)?;
-        Ok(Value::Bool(matches!(&args[0], Value::Int(_) | Value::Float(_))))
+        Ok(Value::Bool(matches!(
+            &args[0],
+            Value::Int(_) | Value::Float(_)
+        )))
     });
     def(env, "symbol?", |args| {
         need(args, 1)?;
@@ -2036,6 +2142,134 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
                 r.borrow().iter().map(|x| Value::Float(*x as f64)).collect(),
             )),
             _ => Err("f32vec->list: нужен f32-вектор".into()),
+        }
+    });
+
+    // — этап 9.3: векторный ALU —
+    // Горячие per-vertex циклы сцены (вода: 625 вершин × ~50 интерпретируемых
+    // операций каждый тик) переходят на пакетные операции над f32-векторами:
+    // десяток вызовов f32vec-op! вместо тысяч f32set!/f32ref.
+    // Операнд a/b — f32-вектор или число (броадкаст); длина векторов равна dst.
+    fn f32_operand(v: &Value, n: usize, what: &str) -> Result<Vec<f32>, String> {
+        match v {
+            Value::F32Vec(r) => {
+                let b = r.borrow();
+                if b.len() != n {
+                    return Err(format!(
+                        "f32vec-op!: длина операнда {} = {} ≠ {} (dst)",
+                        what,
+                        b.len(),
+                        n
+                    ));
+                }
+                Ok(b.clone())
+            }
+            other => {
+                let s = num_val(other)? as f32;
+                Ok(vec![s; n])
+            }
+        }
+    }
+    def(env, "f32vec-op!", |args| {
+        if args.len() < 3 || args.len() > 4 {
+            return Err("f32vec-op!: (f32vec-op! dst 'op a [b])".into());
+        }
+        let op = key_str(&args[1])?;
+        let dst = match &args[0] {
+            Value::F32Vec(r) => r.clone(),
+            _ => return Err("f32vec-op!: dst должен быть f32-вектором".into()),
+        };
+        let n = dst.borrow().len();
+        // оба операнда собираем ДО borrow_mut: dst может совпадать с a/b
+        let a = f32_operand(&args[2], n, "a")?;
+        let b = match args.get(3) {
+            Some(v) => Some(f32_operand(v, n, "b")?),
+            None => None,
+        };
+        let mut d = dst.borrow_mut();
+        if d.len() != n {
+            return Err("f32vec-op!: dst изменил длину".into());
+        }
+        match op.as_str() {
+            "sqrt" => {
+                for (o, x) in d.iter_mut().zip(&a) {
+                    *o = x.sqrt();
+                }
+            }
+            "abs" => {
+                for (o, x) in d.iter_mut().zip(&a) {
+                    *o = x.abs();
+                }
+            }
+            "sin" => {
+                for (o, x) in d.iter_mut().zip(&a) {
+                    *o = x.sin();
+                }
+            }
+            "cos" => {
+                for (o, x) in d.iter_mut().zip(&a) {
+                    *o = x.cos();
+                }
+            }
+            "neg" => {
+                for (o, x) in d.iter_mut().zip(&a) {
+                    *o = -x;
+                }
+            }
+            "+" | "-" | "*" | "/" | "min" | "max" => {
+                let b = match &b {
+                    Some(v) => v,
+                    None => return Err(format!("f32vec-op!: '{}' требует операнд b", op)),
+                };
+                for i in 0..n {
+                    d[i] = match op.as_str() {
+                        "+" => a[i] + b[i],
+                        "-" => a[i] - b[i],
+                        "*" => a[i] * b[i],
+                        "/" => a[i] / b[i],
+                        "min" => a[i].min(b[i]),
+                        _ => a[i].max(b[i]),
+                    };
+                }
+            }
+            _ => return Err(format!("f32vec-op!: неизвестная операция '{}'", op)),
+        }
+        Ok(Value::Nil)
+    });
+    // рассылка плотного вектора в страйд-буфер: dst[k·stride + offset] = src[k]
+    // (пример: канал RGBA → пер-вершинный буфер mesh-vc со страйдом 4)
+    def(env, "f32vec-strided-set!", |args| {
+        need(args, 4)?;
+        let stride = int_val(&args[1])? as usize;
+        let off = int_val(&args[2])? as usize;
+        if stride == 0 || off >= stride {
+            return Err("f32vec-strided-set!: нужно stride ≥ 1 и offset < stride".into());
+        }
+        let src: Vec<f32> = match &args[3] {
+            Value::F32Vec(r) => r.borrow().clone(),
+            _ => return Err("f32vec-strided-set!: src должен быть f32-вектором".into()),
+        };
+        match &args[0] {
+            Value::F32Vec(r) => {
+                let mut d = r.borrow_mut();
+                let need = if src.is_empty() {
+                    0
+                } else {
+                    (src.len() - 1) * stride + off + 1
+                };
+                if d.len() < need {
+                    return Err(format!(
+                        "f32vec-strided-set!: dst короче: {} < {}",
+                        d.len(),
+                        need
+                    ));
+                }
+                for (k, v) in src.iter().enumerate() {
+                    d[k * stride + off] = *v;
+                }
+                Ok(Value::Nil)
+            }
+            _ => Err("f32vec-strided-set!: dst должен быть f32-вектором".into()),
         }
     });
 
@@ -2461,5 +2695,43 @@ mod tests {
             let norm = got.replace(".0", "");
             assert!(norm == "99", "lambda () 99: {}", got);
         }
+    }
+
+    #[test]
+    fn векторный_alu_и_страйд_рассылка() {
+        let (_c, cell) = ctx();
+        ev(&cell, "(define a (f32-from-list (list 1.0 2.0 4.0)))");
+        ev(&cell, "(define b (f32-from-list (list 10.0 20.0 40.0)))");
+        ev(&cell, "(define d (make-f32vec 3 0.0))");
+        // vec+vec, vec×scalar, scalar−vec (первый операнд — число), min/max
+        ev(&cell, "(f32vec-op! d '+ a b)");
+        assert_eq!(ev(&cell, "(f32ref d 2)"), "44.0");
+        ev(&cell, "(f32vec-op! d '* a 0.5)");
+        assert_eq!(ev(&cell, "(f32ref d 1)"), "1.0");
+        ev(&cell, "(f32vec-op! d '- 10.0 a)");
+        assert_eq!(ev(&cell, "(f32ref d 0)"), "9.0");
+        ev(&cell, "(f32vec-op! d 'min a b)");
+        assert_eq!(ev(&cell, "(f32ref d 1)"), "2.0");
+        ev(&cell, "(f32vec-op! d 'max a b)");
+        assert_eq!(ev(&cell, "(f32ref d 0)"), "10.0");
+        // унарные: sqrt
+        ev(&cell, "(f32vec-op! d 'sqrt a)");
+        assert_eq!(ev(&cell, "(f32ref d 2)"), "2.0");
+        // in-place: dst совпадает с операндом (алиасинг)
+        ev(&cell, "(f32vec-op! b '+ b b)");
+        assert_eq!(ev(&cell, "(f32ref b 0)"), "20.0");
+        // страйд-рассылка: канал Y в [x,y,z]×N
+        ev(&cell, "(define pos (make-f32vec 9 0.0))");
+        ev(&cell, "(define ys (f32-from-list (list 7.0 8.0 9.0)))");
+        ev(&cell, "(f32vec-strided-set! pos 3 1 ys)");
+        assert_eq!(ev(&cell, "(f32ref pos 1)"), "7.0");
+        assert_eq!(ev(&cell, "(f32ref pos 4)"), "8.0");
+        assert_eq!(ev(&cell, "(f32ref pos 7)"), "9.0");
+        assert_eq!(ev(&cell, "(f32ref pos 0)"), "0.0");
+        // ошибки: несовпадение длин, offset ≥ stride, неизвестная операция
+        ev(&cell, "(define e (make-f32vec 4 1.0))");
+        assert!(ev_res(&cell, "(f32vec-op! d '+ a e)").is_err());
+        assert!(ev_res(&cell, "(f32vec-strided-set! pos 0 0 ys)").is_err());
+        assert!(ev_res(&cell, "(f32vec-op! d 'pow a b)").is_err());
     }
 }

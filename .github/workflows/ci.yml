@@ -71,3 +71,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: bash scripts/smoke.sh
+
+  wasm-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo build --release --target wasm32-unknown-unknown
+      - run: node scripts/wasm_smoke.js target/wasm32-unknown-unknown/release/rlisp-engine.wasm assets/lisp/main_physpoly.lisp 30
