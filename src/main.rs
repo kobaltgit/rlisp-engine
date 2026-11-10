@@ -6,6 +6,7 @@
 #![allow(unknown_lints)]
 #![allow(clippy::manual_is_multiple_of)]
 
+mod assets;
 mod audio;
 mod ecs;
 mod editor;
@@ -23,8 +24,10 @@ mod parse_diff;
 mod particles;
 mod physics;
 mod png;
+mod post;
 mod render3d;
 mod simd;
+mod skel;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -204,6 +207,8 @@ pub fn register_all(env: Gc, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
     physics::register(env, Rc::new(RefCell::new(Vec::new())));
     ecs::register(env, Rc::new(RefCell::new(Vec::new())));
     particles::register(env, Rc::new(RefCell::new(Vec::new())));
+    skel::register(env, Rc::new(RefCell::new(Vec::new())));
+    assets::register(env, Rc::new(RefCell::new(Vec::new())));
 }
 
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
@@ -1137,7 +1142,7 @@ fn run_engine(args: &Args) -> Result<(), String> {
     let n_files = files.len();
 
     println!(
-        "rlisp-engine v0.12 | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
+        "rlisp-engine v0.14 | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
         simd::level_name(simd::detect()),
         render_note,
         w,

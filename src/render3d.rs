@@ -1338,6 +1338,33 @@ pub(crate) fn batch_draw(
     mvp: &[f32],
     texid: i64,
 ) -> Result<u64, String> {
+    batch_draw_impl(hal, pos, uv, nrm, idx, insts, mvp, texid, false)
+}
+
+/// Этап 16: батч с ГОТОВЫМИ матрицами инстансов (скелетная анимация).
+/// Формат инстанса: 20 f32 = матрица 4×4 (строчная, аффинная) + r g b a.
+pub(crate) fn batch_draw_mat(
+    hal: &mut Hal,
+    pos: &[f32],
+    idx: &[f32],
+    insts: &[f32],
+    mvp: &[f32],
+) -> Result<u64, String> {
+    batch_draw_impl(hal, pos, None, None, idx, insts, mvp, 0, true)
+}
+
+#[allow(clippy::too_many_arguments)] // формат батча — 9 параметров по дизайну HAL
+fn batch_draw_impl(
+    hal: &mut Hal,
+    pos: &[f32],
+    uv: Option<&[f32]>,
+    nrm: Option<&[f32]>,
+    idx: &[f32],
+    insts: &[f32],
+    mvp: &[f32],
+    texid: i64,
+    mat_mode: bool,
+) -> Result<u64, String> {
     // wgpu-режим: сброс нужен только перед программным 3D-батчем
     if !matches!(hal.backend, crate::gpu::Backend::Wgpu(_)) {
         let _ = hal.flush_gpu(true);
@@ -1358,8 +1385,13 @@ pub(crate) fn batch_draw(
     if idx.len() % 3 != 0 {
         return Err("gpu3d-batch: индексы — тройки вершин".into());
     }
-    if insts.len() % 12 != 0 {
-        return Err("gpu3d-batch: инстансы — по 12 f32 (t.xyz s.xyz yaw pitch roll r g b)".into());
+    let stride = if mat_mode { 20 } else { 12 };
+    if insts.len() % stride != 0 {
+        return Err(if mat_mode {
+            "gpu3d-batch-mat: инстансы — по 20 f32 (матрица 4×4 + r g b a)".into()
+        } else {
+            "gpu3d-batch: инстансы — по 12 f32 (t.xyz s.xyz yaw pitch roll r g b)".into()
+        });
     }
     if insts.is_empty() {
         return Ok(0); // пустой батч — ничего не рисуем (врагов пока нет)
@@ -1367,7 +1399,7 @@ pub(crate) fn batch_draw(
     if mvp.len() != 16 {
         return Err("gpu3d-batch: mvp 4x4 = 16 чисел".into());
     }
-    let k = insts.len() / 12;
+    let k = insts.len() / stride;
     if k * n * 3 > 8_000_000 {
         return Err("gpu3d-batch: слишком много вершин".into());
     }
@@ -1381,8 +1413,12 @@ pub(crate) fn batch_draw(
         let mut idx_all: Vec<f32> = Vec::with_capacity(k * idx.len());
         let mut m: [f32; 16] = [0.0; 16];
         for i in 0..k {
-            let ins = &insts[i * 12..(i + 1) * 12];
-            inst_matrix(ins, &mut m);
+            let ins = &insts[i * stride..(i + 1) * stride];
+            if mat_mode {
+                m.copy_from_slice(&ins[0..16]);
+            } else {
+                inst_matrix(ins, &mut m);
+            }
             let base = i * n;
             for vi in 0..n {
                 let x = pos[vi * 3];
@@ -1404,12 +1440,14 @@ pub(crate) fn batch_draw(
         hal.r3.drawn += drawn;
         return Ok(drawn);
     }
-    // wgpu-режим: батч на GPU через аппаратный instancing
-    if let crate::gpu::Backend::Wgpu(gpu) = &mut hal.backend {
-        let r3_state = hal.r3.state();
-        let drawn = gpu.draw_batch_3d(pos, uv, nrm, idx, insts, mvp, texid, &r3_state)?;
-        hal.r3.drawn += drawn;
-        return Ok(drawn);
+    // wgpu-режим: батч на GPU через аппаратный instancing (только стандартные 12-f32 инстансы)
+    if !mat_mode {
+        if let crate::gpu::Backend::Wgpu(gpu) = &mut hal.backend {
+            let r3_state = hal.r3.state();
+            let drawn = gpu.draw_batch_3d(pos, uv, nrm, idx, insts, mvp, texid, &r3_state)?;
+            hal.r3.drawn += drawn;
+            return Ok(drawn);
+        }
     }
     let (w, h) = (hal.w, hal.h);
     if hal.r3.zbuf.len() != w * h {
@@ -1427,8 +1465,12 @@ pub(crate) fn batch_draw(
     let mut m: [f32; 16] = [0.0; 16];
 
     for i in 0..k {
-        let ins = &insts[i * 12..(i + 1) * 12];
-        inst_matrix(ins, &mut m);
+        let ins = &insts[i * stride..(i + 1) * stride];
+        if mat_mode {
+            m.copy_from_slice(&ins[0..16]);
+        } else {
+            inst_matrix(ins, &mut m);
+        }
         let base = i * n;
         for vi in 0..n {
             let x = pos[vi * 3];
@@ -1460,9 +1502,15 @@ pub(crate) fn batch_draw(
                 uvq.push(u[vi * 2]);
                 uvq.push(u[vi * 2 + 1]);
             }
-            tint.push(ins[9]);
-            tint.push(ins[10]);
-            tint.push(ins[11]);
+            if mat_mode {
+                tint.push(ins[16]);
+                tint.push(ins[17]);
+                tint.push(ins[18]);
+            } else {
+                tint.push(ins[9]);
+                tint.push(ins[10]);
+                tint.push(ins[11]);
+            }
         }
         for &j in idx {
             idx_all.push(j + base as f32);
@@ -2930,6 +2978,20 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Int(n as i64))
     });
 
+    // матричный батч (этап 16): (gpu3d-batch-mat pos idx mats mvp) —
+    // инстансы по 20 f32: матрица 4×4 + цвет; источник — skel-batch!
+    let hc = hal.clone();
+    def(env, "gpu3d-batch-mat", move |args| {
+        need(args, 4)?;
+        let pos = to_f32s(&args[0])?;
+        let idx = to_f32s(&args[1])?;
+        let mats = to_f32s(&args[2])?;
+        let mvp = to_f32s(&args[3])?;
+        let mut h = hc.borrow_mut();
+        let n = batch_draw_mat(&mut h, &pos, &idx, &mats, &mvp)?;
+        Ok(Value::Int(n as i64))
+    });
+
     // текстурный батч: (gpu3d-batch-tex pos uv idx tex insts mvp [nrm])
     let hc = hal.clone();
     def(env, "gpu3d-batch-tex", move |args| {
@@ -2981,6 +3043,22 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             Prim::Wire,
         )?;
         Ok(Value::Int(n as i64))
+    });
+
+    // пост-обработка (этап 19): (gpu3d-post exposure bloom vignette grain)
+    let hc = hal.clone();
+    def(env, "gpu3d-post", move |args| {
+        need(args, 4)?;
+        let p = crate::post::PostParams {
+            exposure: num_val(&args[0])? as f32,
+            bloom: num_val(&args[1])? as f32,
+            vignette: num_val(&args[2])? as f32,
+            grain: num_val(&args[3])? as f32,
+        };
+        let mut h = hc.borrow_mut();
+        let _ = h.flush_gpu(true); // отложенный 2D-слой — до поста (HUD рисуется позже)
+        crate::post::apply(&mut h, &p);
+        Ok(Value::Nil)
     });
 
     let hc = hal.clone();
