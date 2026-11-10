@@ -213,8 +213,8 @@ fn dot3(a: &[f32; 3], b: &[f32; 3]) -> f32 {
 /// Атрибуты (u/w, 1/w, мир/w, a/w, rgb/w) линейны вдоль ребра → интерполируются
 /// тем же t. Мир/w нужен per-pixel half-vector блику, a/w и rgb/w — прозрачности
 /// и цветовым градиентам (вода, небо).
-fn clip_near6(poly: &[[f32; 14]]) -> Vec<[f32; 14]> {
-    let mut out = Vec::with_capacity(poly.len() + 1);
+fn clip_near6(poly: &[[f32; 14]], out: &mut Vec<[f32; 14]>) {
+    out.clear();
     let n = poly.len();
     for i in 0..n {
         let a = poly[i];
@@ -235,7 +235,6 @@ fn clip_near6(poly: &[[f32; 14]]) -> Vec<[f32; 14]> {
             out.push(v);
         }
     }
-    out
 }
 
 #[derive(Clone, Copy)]
@@ -908,6 +907,14 @@ fn raster_tris(
     culled: &mut u64,
 ) -> Result<(), String> {
     let n = world.len() / 3;
+    // скретч-буферы переиспользуются всеми треугольниками (без аллокаций
+    // на треугольник в горячем цикле — цена тесселяции ревизии 4)
+    let mut poly_buf: Vec<[f32; 14]> = Vec::with_capacity(8);
+    let mut clip_buf: Vec<[f32; 14]> = Vec::with_capacity(8);
+    let mut pts_buf: Vec<Vtx> = Vec::with_capacity(8);
+    // кэш проекций: вершина регулярной сетки переиспользуется до 4 квад,
+    // project6 с перспективным делением — самая дорогая часть цикла
+    let mut vcache: Vec<Option<Vtx>> = vec![None; n];
     for f in 0..idx.len() / 3 {
         let mut tri = [0usize; 3];
         for k in 0..3 {
@@ -929,7 +936,7 @@ fn raster_tris(
             Some(t) => [t[tri[0] * 3], t[tri[0] * 3 + 1], t[tri[0] * 3 + 2]],
             None => [solid.0, solid.1, solid.2],
         };
-        let mut poly: Vec<[f32; 14]> = Vec::with_capacity(3);
+        poly_buf.clear();
         for &t in &tri {
             let cw = clip[t * 4 + 3];
             let iw = if cw > 1e-6 { 1.0 / cw } else { 0.0 };
@@ -945,7 +952,7 @@ fn raster_tris(
             } else {
                 (blend_base, base_rgb[0], base_rgb[1], base_rgb[2])
             };
-            poly.push([
+            poly_buf.push([
                 clip[t * 4],
                 clip[t * 4 + 1],
                 clip[t * 4 + 2],
@@ -963,25 +970,43 @@ fn raster_tris(
             ]);
         }
 
-        let poly = if poly.iter().any(|v| v[3] < 1e-6) {
-            let clipped = clip_near6(&poly);
-            if clipped.len() < 3 {
+        let poly: &[[f32; 14]] = if poly_buf.iter().any(|v| v[3] < 1e-6) {
+            clip_near6(&poly_buf, &mut clip_buf);
+            if clip_buf.len() < 3 {
                 *culled += 1;
                 continue;
             }
-            clipped
+            &clip_buf
         } else {
-            poly
+            &poly_buf
         };
 
-        let mut pts = Vec::with_capacity(poly.len());
+        let pts = &mut pts_buf;
+        pts.clear();
         let mut ok = true;
-        for v in &poly {
-            match project6(v, w, h) {
-                Some(p) => pts.push(p),
-                None => {
-                    ok = false;
-                    break;
+        if poly.len() == 3 {
+            // без клипа: проекции берём из кэша вершины (порядок tri[])
+            for (k, &vi) in tri.iter().enumerate() {
+                let c = &mut vcache[vi];
+                if c.is_none() {
+                    *c = project6(&poly[k], w, h);
+                }
+                match c {
+                    Some(p) => pts.push(*p),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        } else {
+            for v in poly {
+                match project6(v, w, h) {
+                    Some(p) => pts.push(p),
+                    None => {
+                        ok = false;
+                        break;
+                    }
                 }
             }
         }

@@ -27,9 +27,11 @@
 
 ;; ——— мир ———
 (define *ia* 32.0)            ; полуразмер ландшафта (вместе с дном)
-(define *in* 36)              ; клеток ландшафта (37×37 вершин)
+(define *in* 60)              ; клеток ландшафта (61×61; шаг 1.07)
+                              ; ревизия 4: гладкие склоны вместо граней)
 (define *wa* 56.0)            ; полуразмер водного плана (угол сетки за туманом)
-(define *wn* 20)              ; клеток воды (21×21 вершин)
+(define *wn* 24)              ; клеток воды (25×25; шаг 4.7)
+                              ; кромка пены; цвет обновляется блоками строк)
 
 (define (hash2 x y)
   (abs (sin (+ (* x 12.9898) (* y 78.233)))))
@@ -356,6 +358,42 @@
           (+ (caddr p) (* lz 1.5 s))
           s)))
 
+;; ствол пальмы ревизии 4: гладкий ЦИЛИНДР (8 сторон × 9 колец), изгиб
+;; по lean-кривой, сужение 0.21→0.10; все 7 пальм слиты в ОДИН статичный
+;; меш (1 draw вместо батча кубов); UV: u — обхват, v — высота, tiling
+;; материала 'кора (2 3) даёт 2 обхвата и 3 повтора по стволу
+(define (palm-cyl-mesh)
+  (let ((pos '()) (uv '()) (idx '()) (vi 0))
+    (define (rr tt) (- 0.21 (* 0.11 tt)))
+    (dotimes (k *palm-n*)
+      (let* ((p (palm-pos k))
+             (s (+ 0.9 (* 0.3 (hash2 k 71))))
+             (lean-az (* 6.28 (hash2 k 73)))
+             (lx (cos lean-az)) (lz (sin lean-az))
+             (base vi))
+        (dotimes (ri 9)
+          (let* ((tt (/ ri 8.0))
+                 (cx (+ (car p) (* lx tt tt 1.5 s)))
+                 (cz (+ (caddr p) (* lz tt tt 1.5 s)))
+                 (cy (+ (+ (cadr p) (* 0.5 s)) (* tt 3.9 s)))
+                 (r (rr tt)))
+            (dotimes (si 8)
+              (let* ((aa (* si 0.78539816)))
+                (set! pos
+                      (append pos
+                              (list (+ cx (* r (cos aa))) cy
+                                    (+ cz (* r (sin aa))))))
+                (set! uv (append uv (list (* si 0.125) tt)))))))
+        (dotimes (ri 8)
+          (dotimes (si 8)
+            (let* ((a (+ base (* ri 8) si))
+                   (b (+ base (* ri 8) (mod (+ si 1) 8)))
+                   (c (+ a 8)) (d (+ b 8)))
+              (set! idx (append idx (list a c b  b c d))))))
+        (set! vi (+ vi 72))))
+    (list (f32-from-list pos) (f32-from-list uv) (f32-from-list idx))))
+(define *ptrunk* (palm-cyl-mesh))
+
 ;; листья: локальный квад вдоль +x, roll (Rz) топит его вниз, yaw раскладывает
 ;; веером; пересобираются каждый 2-й кадр (ветер)
 (define (palm-frond-insts)
@@ -436,15 +474,33 @@
         (f32set! uv (+ b 7) 1)))
     uv))
 
-;; ——— камни: октаэдры (батч) ———
-(define *rock-pos*
-  (f32-from-list (list 1 0 0  -1 0 0  0 1 0  0 -1 0  0 0 1  0 0 -1)))
-(define *rock-idx*
-  (f32-from-list (list 0 2 4  2 1 4  1 3 4  3 0 4
-                       2 0 5  1 2 5  3 1 5  0 3 5)))
-(define *rock-uv*
-  (f32-from-list (list 0.7 0.5  0.3 0.5  0.5 0.85
-                       0.5 0.15  0.85 0.5  0.15 0.5)))
+;; ——— камни ревизии 4: валуны вместо октаэдров — сфера 7 колец × 10
+;; колонн (с дублем шва), радиус шумится по hash вершины; плоское
+;; затенение даёт граненый, но уже НЕ треугольный силуэт ——
+(define (boulder-mesh)
+  (let ((pos '()) (uv '()) (idx '()) (vi 0))
+    (dotimes (ri 7)
+      (let ((ph (- (* 3.14159265 (/ ri 6.0)) 1.5707963)))
+        (dotimes (si 10)
+          (let* ((th (* 6.2831853 (/ si 9.0)))
+                 (jr (+ 0.74 (* 0.52 (hash2 (+ 7 (* ri 37)) (+ 3 si)))))
+                 (cp (cos ph)))
+            (set! pos
+                  (append pos
+                          (list (* jr cp (cos th)) (* jr (sin ph))
+                                (* jr cp (sin th)))))
+            (set! uv (append uv (list (/ si 9.0) (/ ri 6.0))))))))
+    (set! vi 0)
+    (dotimes (ri 6)
+      (dotimes (si 9)
+        (let* ((a (+ (* ri 10) si))
+               (b (+ a 1)) (c (+ a 10)) (d (+ c 1)))
+          (set! idx (append idx (list a c b  b c d))))))
+    (list (f32-from-list pos) (f32-from-list uv) (f32-from-list idx))))
+(define *rock-raw* (boulder-mesh))
+(define *rock-pos* (car *rock-raw*))
+(define *rock-uv*  (cadr *rock-raw*))
+(define *rock-idx* (caddr *rock-raw*))
 (define (rock-rows)
   (define (go k acc)
     (if (>= k 12)
@@ -600,14 +656,23 @@
             (mat4-mul (mat-rotate-y yaw) (mat-scale s s s))))
 
 ;; ——— счётчик треугольников (HUD) ———
+;; счётчик submitted-треугольников кадра (без glTF-моделей — их вклад
+;; считается внутри draw-gltf): ландшафт 4 полосы + вода + стволы пальм
+;; (статичный меш) + валуны (12 инстансов) + кроны/стволы деревьев +
+;; листья пальм + пучки травы + тени + облака
 (define (island-tris)
   (+ (/ (f32vec-length *idx-sand*) 3)
      (/ (f32vec-length *idx-grass*) 3)
      (/ (f32vec-length *idx-rock*) 3)
      (/ (f32vec-length *idx-sea*) 3)
      (/ (f32vec-length *widx*) 3)
-     (* (+ *tree-n* *palm-n*) 24)
-     100))
+     (/ (f32vec-length (caddr *ptrunk*)) 3)
+     (* 12 (/ (f32vec-length *rock-idx*) 3))
+     (* *tree-n* 24)
+     (* *palm-n* 7 2)
+     (* 56 2)
+     (* 21 2)
+     (* 9 2)))
 
 ;; ——— небо: 12 полос, тёплый горизонт → глубокий зенит ———
 (define (draw-sky)
@@ -684,8 +749,9 @@
                     *tex-leaf* *crown-cache* mvp 'листва)
     ;; пальмы: ствол (opaque) + листья (blend, ветер)
     (gpu3d-alpha-blend 1.0)
-    (draw-batch-tex *trunk-mesh* *trunk-uv* *tex-bark*
-                    *ptrunk-cache* mvp 'кора)
+    (draw-mesh-tex (list (car *ptrunk*) (caddr *ptrunk*))
+                   (cadr *ptrunk*) *tex-bark* (mat-identity) mvp
+                   (list 1 1 1) 'кора)
     (gpu3d-alpha-blend 0.98)
     (draw-batch-tex (list (car *frond-mesh*) (cadr *frond-mesh*))
                     (caddr *frond-mesh*) *tex-palm* *frond-cache* mvp 'палма)
@@ -750,7 +816,7 @@
       #f)
   ;; цвет/альфа воды (френель/пена) — каждый 8-й кадр (френель меняется
   ;; медленно: камера орбитит 0.1 рад/с; честно отражено в LIMITATIONS)
-  (if (= 0 (mod *frame* 8))
+  (if (= 0 (mod *frame* 4))
       (update-water-vc (list (* 20.5 (cos (* *t* 0.10)))
                              9.6
                              (* 20.5 (sin (* *t* 0.10)))))
