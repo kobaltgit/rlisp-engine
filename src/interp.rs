@@ -1406,6 +1406,24 @@ pub static EMBEDDED_LISP: &[(&str, &str)] = &[
         "materials.lisp",
         include_str!("../assets/lisp/materials.lisp"),
     ),
+    ("audio.lisp", include_str!("../assets/lisp/audio.lisp")),
+    (
+        "../assets/lisp/audio.lisp",
+        include_str!("../assets/lisp/audio.lisp"),
+    ),
+    ("oasis.lisp", include_str!("../assets/lisp/oasis.lisp")),
+    (
+        "../assets/lisp/oasis.lisp",
+        include_str!("../assets/lisp/oasis.lisp"),
+    ),
+    (
+        "main_oasis.lisp",
+        include_str!("../assets/lisp/main_oasis.lisp"),
+    ),
+    (
+        "../assets/lisp/main_oasis.lisp",
+        include_str!("../assets/lisp/main_oasis.lisp"),
+    ),
     (
         "phys_poly.lisp",
         include_str!("../assets/lisp/phys_poly.lisp"),

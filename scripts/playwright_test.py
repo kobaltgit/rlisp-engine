@@ -13,6 +13,8 @@ with sync_playwright() as p:
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
     pg.goto(HTML)
+    pg.select_option("#preset", "Физполигон (3D, физика, вода)")
+    pg.click("#run")
     # сцена с атмосферой грузится несколько секунд — поллим статуса до 20 с
     status = ""
     for _ in range(40):
@@ -92,5 +94,46 @@ with sync_playwright() as p:
     hard = [e for e in errors if "favicon" not in e]
     print("JS-ошибки:", hard[:3] if hard else "нет")
     assert not hard, f"JS-ошибки: {hard[:3]}"
+
+    # ——— ОАЗИС: переключение пресета, клавиши, HUD, лиса ———
+    pg.select_option("#preset", "ОАЗИС (FPS: лисы, стрельба, волны)")
+    pg.click("#run")
+    status2 = ""
+    for _ in range(40):
+        pg.wait_for_timeout(500)
+        status2 = pg.text_content("#status") or ""
+        if "fps" in status2:
+            break
+    print("оазис статус:", status2)
+    assert "fps" in status2, "ОАЗИС не стартовал"
+
+    # клавиши: f = старт + выстрел, w = шаг, a/d = повороты
+    pg.focus("body")
+    pg.keyboard.press("f")
+    pg.keyboard.down("w")
+    pg.wait_for_timeout(600)
+    pg.keyboard.up("w")
+    pg.keyboard.down("a")
+    pg.wait_for_timeout(400)
+    pg.keyboard.up("a")
+    pg.wait_for_timeout(500)
+    # лиса вшита в wasm и загружена (probe растёт, ошибок нет)
+    errs_oasis = [e for e in errors if "оазис" in e.lower() or "gltf" in e.lower()]
+    assert not errs_oasis, f"ошибки в ОАЗИС: {errs_oasis[:3]}"
+    px2 = pg.evaluate("""() => {
+        const c = document.getElementById('screen');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let orange = 0, nonempty = 0;
+        for (let i = 0; i < d.length; i += 4) {
+            if (d[i] | d[i+1] | d[i+2]) nonempty++;
+            if (d[i] > 140 && d[i+1] > 60 && d[i+2] < 90 && d[i] > d[i+2] + 60) orange++;
+        }
+        return [orange, nonempty];
+    }""")
+    print("оазис канвас: оранжевых пикселей", px2[0], "непустых", px2[1])
+    assert px2[1] > 50000, "канвас ОАЗИС пуст"
+    print("ОАЗИС playwright: ok")
+
     b.close()
+
     print("ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
