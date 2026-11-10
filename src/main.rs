@@ -6,6 +6,7 @@
 #![allow(unknown_lints)]
 #![allow(clippy::manual_is_multiple_of)]
 
+mod audio;
 mod editor;
 mod gc;
 mod gpu;
@@ -1122,6 +1123,7 @@ fn run_engine(args: &Args) -> Result<(), String> {
     // v0.3: мост редактора (--serve) — публикуем кадр/сцену, принимаем команды
     let bridge = if args.serve {
         let b = editor::Bridge::new();
+        b.set_audio(halrc.borrow().audio.clone());
         editor::install_bridge(b.clone());
         editor::start_server(b.clone(), args.port, root.clone())
             .map_err(|e| format!("редактор: порт {} занят: {}", args.port, e))?;
@@ -1460,8 +1462,21 @@ fn main() {
         }
         return;
     }
-    if let Err(e) = run_engine(&args) {
-        eprintln!("[ошибка] {}", e);
+    // Запуск игрового цикла в потоке с гарантированным стеком 8 МБ
+    // (на Windows дефолтный стек главного PE-потока всего 1 МБ, что приводит
+    // к переполнению в неоптимизированной debug-сборке при глубоком разборе Lisp)
+    let builder = std::thread::Builder::new()
+        .name("rlisp-main".into())
+        .stack_size(8 * 1024 * 1024);
+    let handler = builder
+        .spawn(move || {
+            if let Err(e) = run_engine(&args) {
+                eprintln!("[ошибка] {}", e);
+                std::process::exit(1);
+            }
+        })
+        .unwrap();
+    if handler.join().is_err() {
         std::process::exit(1);
     }
 }

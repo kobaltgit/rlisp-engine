@@ -75,16 +75,47 @@
   .prefab .chip { float: right; color: var(--acc2); font-size: 10.5px; font-family: Consolas, monospace; }
 
   /* ─── видовой порт ─── */
-  #col-view { border-right: 1px solid var(--line); }
+  #col-view { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  #col-view.expanded #tabs,
+  #col-view.expanded .tabpage { display: none !important; }
+  #col-view.expanded #viewport { flex: 1 !important; min-height: 0 !important; }
+
+  #viewbar {
+    display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex: 0 0 auto;
+  }
+  .vbar-title { font-size: 10.5px; font-weight: 700; color: var(--dim); letter-spacing: 1px; text-transform: uppercase; }
+  .vbar-group { display: flex; gap: 2px; background: var(--panel2); border-radius: 4px; padding: 2px; }
+  .vbtn { border: 0; background: transparent; color: var(--dim); font-size: 11px; padding: 3px 8px; border-radius: 3px; cursor: pointer; }
+  .vbtn:hover { color: var(--txt); }
+  .vbtn.on { background: var(--panel); color: var(--acc); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+  .vbar-hint { font-size: 11px; color: var(--dim); transition: color 0.2s; }
+  .vbar-hint.active { color: var(--ok); font-weight: 700; }
+
   #viewport {
-    flex: 1.2; min-height: 120px; background: #0b0d12; position: relative;
-    display: flex; align-items: center; justify-content: center; padding: 8px;
-    border-bottom: 1px solid var(--line);
+    flex: 1.6; min-height: 240px; background: #0b0d12; position: relative;
+    display: flex; align-items: center; justify-content: center; padding: 10px;
+    border-bottom: 1px solid var(--line); overflow: hidden;
   }
   #viewport.dragover { outline: 2px dashed var(--acc); outline-offset: -6px; }
-  #viewbox { position: relative; max-width: 100%; max-height: 100%; }
-  #view { display: block; max-width: 100%; max-height: 100%; image-rendering: pixelated;
-          border: 1px solid var(--line); }
+  #viewbox {
+    position: relative;
+    outline: 2px solid transparent;
+    border-radius: 3px;
+    transition: outline 0.15s, box-shadow 0.15s;
+    user-select: none;
+  }
+  #viewbox.focused {
+    outline: 2px solid var(--ok);
+    box-shadow: 0 0 16px rgba(89, 217, 140, 0.28);
+  }
+  #view {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    border: 1px solid var(--line);
+    background: #000;
+  }
   #gizmo { position: absolute; left: 0; top: 0; cursor: crosshair; }
   #toast {
     position: absolute; top: 14px; right: 14px; max-width: 320px;
@@ -141,6 +172,25 @@
   #insp .del { margin-top: 6px; width: 100%; }
   .kbd { color: var(--dim); font-size: 10.5px; border: 1px solid var(--line); border-radius: 3px;
          padding: 0 5px; font-family: Consolas, monospace; }
+
+  /* ─── аудио панель ─── */
+  #p-audio { flex: 1.2; overflow-y: auto; padding: 10px; background: #10131a; }
+  .audio-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+               background: var(--panel); padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; }
+  .audio-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 12px; }
+  .audio-card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 12px; }
+  .audio-card h3 { font-size: 13px; margin: 0 0 10px 0; color: var(--acc); display: flex; align-items: center; justify-content: space-between; }
+  .preset-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+  .preset-row button { font-size: 11px; padding: 3px 7px; background: var(--panel2); }
+  .sfx-prop { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+  .sfx-prop label { flex: 0 0 110px; color: var(--dim); }
+  .sfx-prop input[type="range"] { flex: 1; accent-color: var(--acc); }
+  .sfx-prop select { flex: 1; background: #10131a; color: var(--txt); border: 1px solid var(--line); padding: 3px 6px; border-radius: 3px; }
+  .sfx-prop .val { flex: 0 0 60px; text-align: right; color: var(--acc); font-family: monospace; font-size: 11px; }
+  .audio-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .audio-tbl th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); color: var(--dim); }
+  .audio-tbl td { padding: 4px 6px; border-bottom: 1px solid #1f2330; }
+  .btn-play-sm { font-size: 10.5px; padding: 2px 7px; background: var(--panel2); }
 </style>
 </head>
 <body>
@@ -168,6 +218,17 @@
   </div>
 
   <div class="col" id="col-view">
+    <div id="viewbar">
+      <span class="vbar-title">Вид 3D</span>
+      <div class="vbar-group">
+        <button id="b-scale-1x" class="vbtn" title="Оригинальный размер 320x240">1x</button>
+        <button id="b-scale-2x" class="vbtn" title="Увеличенный размер 640x480">2x</button>
+        <button id="b-scale-fit" class="vbtn on" title="Заполнить всё доступное окно с сохранением 4:3">Fit</button>
+      </div>
+      <span class="spacer"></span>
+      <span id="vbar-focus-hint" class="vbar-hint">Кликните в экран для управления WASD / R</span>
+      <button id="b-expand-view" class="vbtn" title="Развернуть/свернуть экран (F)">⛶ Развернуть</button>
+    </div>
     <div id="viewport">
       <div id="viewbox">
         <img id="view" alt="кадр движка">
@@ -178,6 +239,7 @@
     <div id="tabs">
       <button class="tab on" data-t="code">Код</button>
       <button class="tab" data-t="console">Консоль</button>
+      <button class="tab" data-t="audio">Аудио</button>
       <span class="spacer"></span>
       <span style="padding:7px 12px;color:var(--dim);font-size:11px">
         <span class="kbd">G</span> гизмо · <span class="kbd">Del</span> удалить · <span class="kbd">Ctrl+S</span> сохранить файл
@@ -197,6 +259,106 @@
       <div id="repl">
         <span class="pr">›</span>
         <input id="repl-in" placeholder="(mcp-spawn-at 'brute 10 10) · (editor-scene) · Enter — исполнить">
+      </div>
+    </div>
+    <div class="tabpage" id="p-audio">
+      <div class="audio-bar">
+        <button id="b-audio-live" class="tog on" title="Воспроизводить звуки игры в реальном времени через браузер">🔊 Звук в браузере: ВКЛ</button>
+        <span class="spacer"></span>
+        <span style="font-size:12px;color:var(--dim)">Мастер-громкость:</span>
+        <input type="range" id="audio-master-vol" min="0" max="1" step="0.05" value="1.0" style="width:120px;accent-color:var(--acc)">
+        <span id="audio-master-val" style="font-size:12px;color:var(--acc);min-width:35px">100%</span>
+        <span class="stat" style="margin-left:12px">голоса: <b id="audio-voices-stat">0</b></span>
+      </div>
+      <div class="audio-grid">
+        <div class="audio-card">
+          <h3>Синтезатор чиптюнов (SFX) <span style="font-weight:400;color:var(--dim);font-size:11px">sfxr / PICO-8</span></h3>
+          <div class="preset-row">
+            <button onclick="applySfxPreset('laser')">⚡ Лазер</button>
+            <button onclick="applySfxPreset('explosion')">💥 Взрыв</button>
+            <button onclick="applySfxPreset('hit')">👾 Удар</button>
+            <button onclick="applySfxPreset('jump')">⬆ Прыжок</button>
+            <button onclick="applySfxPreset('coin')">🪙 Монета</button>
+            <button onclick="applySfxPreset('engine')">⚙ Гул</button>
+            <button onclick="applySfxPreset('random')">🎲 Случайный</button>
+          </div>
+          <div class="sfx-prop">
+            <label>Форма волны:</label>
+            <select id="sfx-wave">
+              <option value="square">Square (квадрат)</option>
+              <option value="sawtooth">Sawtooth (пила)</option>
+              <option value="triangle">Triangle (треугольник)</option>
+              <option value="sine">Sine (синус)</option>
+              <option value="noise">Noise (белый шум)</option>
+            </select>
+            <span class="val"></span>
+          </div>
+          <div class="sfx-prop">
+            <label>Частота (Freq):</label>
+            <input type="range" id="sfx-freq" min="40" max="2000" step="10" value="440">
+            <span class="val" id="sfx-freq-val">440 Гц</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Длительность:</label>
+            <input type="range" id="sfx-dur" min="0.05" max="1.0" step="0.01" value="0.20">
+            <span class="val" id="sfx-dur-val">0.20 с</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Атака (Attack):</label>
+            <input type="range" id="sfx-att" min="0.001" max="0.2" step="0.005" value="0.01">
+            <span class="val" id="sfx-att-val">0.01 с</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Спад (Decay):</label>
+            <input type="range" id="sfx-dec" min="0.01" max="0.3" step="0.01" value="0.05">
+            <span class="val" id="sfx-dec-val">0.05 с</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Удержание (Sus):</label>
+            <input type="range" id="sfx-sus" min="0.0" max="1.0" step="0.05" value="0.5">
+            <span class="val" id="sfx-sus-val">50%</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Затухание (Rel):</label>
+            <input type="range" id="sfx-rel" min="0.01" max="0.5" step="0.01" value="0.10">
+            <span class="val" id="sfx-rel-val">0.10 с</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Скольжение (Slide):</label>
+            <input type="range" id="sfx-slide" min="-2500" max="2500" step="50" value="0">
+            <span class="val" id="sfx-slide-val">0 Гц/с</span>
+          </div>
+          <div class="sfx-prop">
+            <label>Скважность (Duty):</label>
+            <input type="range" id="sfx-duty" min="0.1" max="0.9" step="0.05" value="0.5">
+            <span class="val" id="sfx-duty-val">50%</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button id="b-sfx-play" style="flex:1;background:var(--acc);color:#0f172a;font-weight:700">▶ Прослушать</button>
+            <button id="b-sfx-insert" style="flex:1" title="Вставить форму defsound-synth в код">📝 Вставить в код</button>
+            <button id="b-sfx-send" style="flex:1" class="warn" title="Отправить в движок">🚀 В движок</button>
+          </div>
+        </div>
+
+        <div class="audio-card">
+          <h3>Звуки в движке (<span id="audio-count-badge">0</span>)</h3>
+          <div style="max-height:360px;overflow-y:auto">
+            <table class="audio-tbl">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Имя</th>
+                  <th>Длит.</th>
+                  <th>Формат</th>
+                  <th>Тест</th>
+                </tr>
+              </thead>
+              <tbody id="audio-sounds-body">
+                <tr><td colspan="5" style="color:var(--dim);text-align:center;padding:12px">Звуки загружаются…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -716,8 +878,123 @@ document.querySelector('[data-t="console"]').addEventListener("click", () => {
   setTimeout(() => $("repl-in").focus(), 0);
 });
 
-/* ───────────────────────── тулбар ───────────────────────── */
-$("b-pause").onclick = () => api("/api/ctl", {cmd: "pause"});
+/* ───────────────────────── тулбар и вьюпорт ───────────────────────── */
+let isPaused = false;
+let scaleMode = localStorage.getItem("rlisp_scale") || "fit";
+let isExpanded = false;
+
+function applyViewportScale(mode) {
+  if (mode) scaleMode = mode;
+  localStorage.setItem("rlisp_scale", scaleMode);
+
+  if ($("b-scale-1x")) $("b-scale-1x").classList.toggle("on", scaleMode === "1x");
+  if ($("b-scale-2x")) $("b-scale-2x").classList.toggle("on", scaleMode === "2x");
+  if ($("b-scale-fit")) $("b-scale-fit").classList.toggle("on", scaleMode === "fit");
+
+  const vp = $("viewport");
+  const v = $("view");
+  const cvs = $("gizmo");
+  if (!vp || !v || !cvs) return;
+
+  const pad = 20;
+  const availW = Math.max(320, vp.clientWidth - pad);
+  const availH = Math.max(240, vp.clientHeight - pad);
+
+  let targetW = 320;
+  let targetH = 240;
+
+  if (scaleMode === "1x") {
+    targetW = 320;
+    targetH = 240;
+  } else if (scaleMode === "2x") {
+    targetW = 640;
+    targetH = 480;
+  } else if (scaleMode === "fit") {
+    targetW = availW;
+    targetH = Math.floor(targetW * (240 / 320));
+    if (targetH > availH) {
+      targetH = availH;
+      targetW = Math.floor(targetH * (320 / 240));
+    }
+  }
+
+  v.style.width = targetW + "px";
+  v.style.height = targetH + "px";
+  cvs.style.width = targetW + "px";
+  cvs.style.height = targetH + "px";
+  cvs.width = targetW;
+  cvs.height = targetH;
+
+  gizmoBox();
+  drawGizmo();
+}
+
+function toggleExpandView() {
+  isExpanded = !isExpanded;
+  $("col-view").classList.toggle("expanded", isExpanded);
+  $("b-expand-view").classList.toggle("on", isExpanded);
+  $("b-expand-view").textContent = isExpanded ? "🗗 Свернуть" : "⛶ Развернуть";
+  setTimeout(() => applyViewportScale(), 60);
+}
+
+$("b-scale-1x").onclick = () => applyViewportScale("1x");
+$("b-scale-2x").onclick = () => applyViewportScale("2x");
+$("b-scale-fit").onclick = () => applyViewportScale("fit");
+$("b-expand-view").onclick = toggleExpandView;
+window.addEventListener("resize", () => applyViewportScale());
+
+/* ───────────────────────── фокус и управление клавишами ───────────────────────── */
+let gameFocused = false;
+const activeKeys = {};
+
+function setGameFocus(focused) {
+  gameFocused = focused;
+  const vb = $("viewbox");
+  if (vb) vb.classList.toggle("focused", focused);
+  const hint = $("vbar-focus-hint");
+  if (hint) {
+    hint.classList.toggle("active", focused);
+    hint.textContent = focused ? "🎮 Управление WASD активно (кликните вне для отмены)" : "Кликните в экран для управления WASD / R";
+  }
+}
+
+function sendKey(key, down) {
+  if (activeKeys[key] === down) return;
+  activeKeys[key] = down;
+  api("/api/key", { key: key, down: down });
+}
+
+function normalizeKey(e) {
+  const k = e.key.toLowerCase();
+  if (k === "w" || k === "arrowup" || k === "ц") return "w";
+  if (k === "s" || k === "arrowdown" || k === "ы") return "s";
+  if (k === "a" || k === "arrowleft" || k === "ф") return "a";
+  if (k === "d" || k === "arrowright" || k === "в") return "d";
+  if (k === "r" || k === "к") return "r";
+  if (k === "q" || k === "й") return "q";
+  if (k === " " || e.code === "Space") return "space";
+  return null;
+}
+
+$("viewbox").addEventListener("click", () => setGameFocus(true));
+document.addEventListener("click", e => {
+  const vb = $("viewbox"), vbar = $("viewbar");
+  if (vb && vbar && !vb.contains(e.target) && !vbar.contains(e.target)) {
+    setGameFocus(false);
+  }
+});
+
+$("b-pause").onclick = () => {
+  const next = !isPaused;
+  api("/api/ctl", {cmd: next ? "pause" : "resume"});
+  isPaused = next;
+  $("b-pause").textContent = isPaused ? "▶ Пуск" : "⏸ Пауза";
+  $("paused-tag").style.display = isPaused ? "block" : "none";
+  if (!isPaused) {
+    clearTimeout(streamTimer);
+    streamFrame();
+  }
+};
 $("b-step").onclick = () => api("/api/ctl", {cmd: "step"});
 $("b-reload").onclick = () => api("/api/ctl", {cmd: "reload"});
 $("b-gizmo").onclick = () => { gizmoOn = !gizmoOn; $("b-gizmo").classList.toggle("on", gizmoOn); };
@@ -727,11 +1004,46 @@ document.addEventListener("keydown", e => {
   const inField = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveCode(); return; }
   if (inField) return;
+
+  if (e.key === "f" || e.key === "F" || e.key === "а" || e.key === "А") {
+    if (!drag && !e.ctrlKey && !e.altKey) {
+      toggleExpandView();
+      return;
+    }
+  }
+
   if (e.key === "g" || e.key === "G" || e.key === "п" || e.key === "П") {
     $("b-gizmo").click();
+    return;
   } else if (e.key === "Delete" || e.key === "Backspace") {
-    if (selected) { removeSel(); e.preventDefault(); }
+    if (selected) { removeSel(); e.preventDefault(); return; }
   }
+
+  const k = normalizeKey(e);
+  if (k) {
+    sendKey(k, true);
+    if (k === "w" || k === "s" || k === "a" || k === "d" || k === "space") {
+      e.preventDefault();
+    }
+  }
+});
+
+document.addEventListener("keyup", e => {
+  const inField = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA";
+  if (inField) return;
+  const k = normalizeKey(e);
+  if (k) {
+    sendKey(k, false);
+  }
+});
+
+window.addEventListener("blur", () => {
+  for (const k in activeKeys) {
+    if (activeKeys[k]) {
+      sendKey(k, false);
+    }
+  }
+  setGameFocus(false);
 });
 
 /* ───────────────────────── табы ───────────────────────── */
@@ -742,6 +1054,300 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   $("p-" + t.dataset.t).classList.add("on");
 });
 
+/* ───────────────────────── Аудиосистема и Web Audio ───────────────────────── */
+let audioCtx = null;
+let masterGainNode = null;
+let masterVolume = 1.0;
+let liveAudioEnabled = true;
+let lastAudioSeq = 0;
+const audioBufferCache = new Map();
+
+function getAudioContext() {
+  if (!audioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      audioCtx = new AudioContextClass();
+      masterGainNode = audioCtx.createGain();
+      masterGainNode.gain.value = masterVolume;
+      masterGainNode.connect(audioCtx.destination);
+    }
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume();
+  }
+  return audioCtx;
+}
+
+// Загрузка WAV и декодирование в AudioBuffer браузера
+async function fetchAndDecodeSound(soundId) {
+  if (audioBufferCache.has(soundId)) return audioBufferCache.get(soundId);
+  const ctx = getAudioContext();
+  if (!ctx) return null;
+  try {
+    const res = await fetch("/api/sound-wav?id=" + soundId);
+    if (!res.ok) return null;
+    const arrayBuf = await res.arrayBuffer();
+    const audioBuf = await ctx.decodeAudioData(arrayBuf);
+    audioBufferCache.set(soundId, audioBuf);
+    return audioBuf;
+  } catch (e) {
+    console.warn("fetchAndDecodeSound error:", e);
+    return null;
+  }
+}
+
+// Воспроизведение звука через Web Audio
+window.playSound = async function(soundId, volume = 1.0, pitch = 1.0, pan = 0.0) {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  const buf = await fetchAndDecodeSound(soundId);
+  if (!buf) return;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = pitch;
+
+  const gain = ctx.createGain();
+  gain.gain.value = volume;
+
+  if (ctx.createStereoPanner) {
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    src.connect(panner);
+    panner.connect(gain);
+  } else {
+    src.connect(gain);
+  }
+
+  gain.connect(masterGainNode || ctx.destination);
+  src.start();
+};
+
+// Кнопка включения/выключения звука в браузере
+$("b-audio-live").onclick = () => {
+  liveAudioEnabled = !liveAudioEnabled;
+  $("b-audio-live").classList.toggle("on", liveAudioEnabled);
+  $("b-audio-live").textContent = liveAudioEnabled ? "🔊 Звук в браузере: ВКЛ" : "🔇 Звук в браузере: ВЫКЛ";
+  if (liveAudioEnabled) getAudioContext();
+};
+
+// Слайдер мастер-громкости
+$("audio-master-vol").addEventListener("input", e => {
+  const v = parseFloat(e.target.value);
+  masterVolume = v;
+  const ctx = getAudioContext();
+  if (masterGainNode && ctx) {
+    masterGainNode.gain.setValueAtTime(v, ctx.currentTime);
+  }
+  $("audio-master-val").textContent = Math.round(v * 100) + "%";
+  evalLisp(`(sound-master-volume ${v.toFixed(2)})`);
+});
+
+// Синтезатор чиптюнов: чтение параметров
+function getSfxParams() {
+  return {
+    wave: $("sfx-wave").value,
+    freq: parseFloat($("sfx-freq").value),
+    dur: parseFloat($("sfx-dur").value),
+    att: parseFloat($("sfx-att").value),
+    dec: parseFloat($("sfx-dec").value),
+    sus: parseFloat($("sfx-sus").value),
+    rel: parseFloat($("sfx-rel").value),
+    slide: parseFloat($("sfx-slide").value),
+    duty: parseFloat($("sfx-duty").value),
+  };
+}
+
+function updateSfxLabels() {
+  const p = getSfxParams();
+  $("sfx-freq-val").textContent = Math.round(p.freq) + " Гц";
+  $("sfx-dur-val").textContent = p.dur.toFixed(2) + " с";
+  $("sfx-att-val").textContent = p.att.toFixed(3) + " с";
+  $("sfx-dec-val").textContent = p.dec.toFixed(2) + " с";
+  $("sfx-sus-val").textContent = Math.round(p.sus * 100) + "%";
+  $("sfx-rel-val").textContent = p.rel.toFixed(2) + " с";
+  $("sfx-slide-val").textContent = Math.round(p.slide) + " Гц/с";
+  $("sfx-duty-val").textContent = Math.round(p.duty * 100) + "%";
+}
+
+["sfx-freq", "sfx-dur", "sfx-att", "sfx-dec", "sfx-sus", "sfx-rel", "sfx-slide", "sfx-duty"].forEach(id => {
+  $(id).addEventListener("input", updateSfxLabels);
+});
+
+// Прослушивание синтезированного звука через Web Audio
+function previewSynthSound() {
+  const p = getSfxParams();
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  const sampleRate = ctx.sampleRate || 44100;
+  const totalFrames = Math.max(1, Math.floor(p.dur * sampleRate));
+  const buf = ctx.createBuffer(1, totalFrames, sampleRate);
+  const data = buf.getChannelData(0);
+  let phase = 0;
+  let curFreq = p.freq;
+  let rng = 0x12345678 ^ (Math.floor(p.freq) & 0xffffffff);
+
+  for (let i = 0; i < totalFrames; i++) {
+    const t = i / sampleRate;
+    let env = 0;
+    if (t < p.att) env = t / p.att;
+    else if (t < p.att + p.dec) env = 1.0 - (1.0 - p.sus) * ((t - p.att) / p.dec);
+    else if (t < p.dur - p.rel) env = p.sus;
+    else if (t < p.dur) env = p.sus * (1.0 - (t - (p.dur - p.rel)) / p.rel);
+
+    curFreq += p.slide / sampleRate;
+    curFreq = Math.max(10, Math.min(20000, curFreq));
+
+    let sample = 0;
+    if (p.wave === "sine") sample = Math.sin(phase * 2 * Math.PI);
+    else if (p.wave === "square") sample = phase < p.duty ? 1 : -1;
+    else if (p.wave === "sawtooth") sample = 2 * phase - 1;
+    else if (p.wave === "triangle") sample = phase < 0.5 ? 4 * phase - 1 : 3 - 4 * phase;
+    else if (p.wave === "noise") {
+      rng ^= rng << 13; rng ^= rng >>> 17; rng ^= rng << 5;
+      sample = (rng / 2147483648) - 1;
+    }
+
+    phase += curFreq / sampleRate;
+    while (phase >= 1) phase -= 1;
+    data[i] = sample * env * 0.5;
+  }
+
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(masterGainNode || ctx.destination);
+  src.start();
+}
+$("b-sfx-play").onclick = previewSynthSound;
+
+// Пресеты чиптюнов
+window.applySfxPreset = function(type) {
+  if (type === "laser") {
+    $("sfx-wave").value = "sawtooth";
+    $("sfx-freq").value = 880;
+    $("sfx-dur").value = 0.15;
+    $("sfx-att").value = 0.005;
+    $("sfx-dec").value = 0.05;
+    $("sfx-sus").value = 0.3;
+    $("sfx-rel").value = 0.08;
+    $("sfx-slide").value = -1800;
+    $("sfx-duty").value = 0.5;
+  } else if (type === "explosion") {
+    $("sfx-wave").value = "noise";
+    $("sfx-freq").value = 160;
+    $("sfx-dur").value = 0.45;
+    $("sfx-att").value = 0.005;
+    $("sfx-dec").value = 0.15;
+    $("sfx-sus").value = 0.4;
+    $("sfx-rel").value = 0.25;
+    $("sfx-slide").value = -200;
+    $("sfx-duty").value = 0.5;
+  } else if (type === "hit") {
+    $("sfx-wave").value = "square";
+    $("sfx-freq").value = 320;
+    $("sfx-dur").value = 0.12;
+    $("sfx-att").value = 0.005;
+    $("sfx-dec").value = 0.04;
+    $("sfx-sus").value = 0.2;
+    $("sfx-rel").value = 0.06;
+    $("sfx-slide").value = -600;
+    $("sfx-duty").value = 0.3;
+  } else if (type === "jump") {
+    $("sfx-wave").value = "square";
+    $("sfx-freq").value = 220;
+    $("sfx-dur").value = 0.18;
+    $("sfx-att").value = 0.01;
+    $("sfx-dec").value = 0.06;
+    $("sfx-sus").value = 0.5;
+    $("sfx-rel").value = 0.10;
+    $("sfx-slide").value = 800;
+    $("sfx-duty").value = 0.5;
+  } else if (type === "coin") {
+    $("sfx-wave").value = "sine";
+    $("sfx-freq").value = 987;
+    $("sfx-dur").value = 0.20;
+    $("sfx-att").value = 0.005;
+    $("sfx-dec").value = 0.04;
+    $("sfx-sus").value = 0.6;
+    $("sfx-rel").value = 0.12;
+    $("sfx-slide").value = 400;
+    $("sfx-duty").value = 0.5;
+  } else if (type === "engine") {
+    $("sfx-wave").value = "triangle";
+    $("sfx-freq").value = 85;
+    $("sfx-dur").value = 0.35;
+    $("sfx-att").value = 0.05;
+    $("sfx-dec").value = 0.10;
+    $("sfx-sus").value = 0.8;
+    $("sfx-rel").value = 0.15;
+    $("sfx-slide").value = 0;
+    $("sfx-duty").value = 0.5;
+  } else if (type === "random") {
+    const waves = ["square", "sawtooth", "triangle", "sine", "noise"];
+    $("sfx-wave").value = waves[Math.floor(Math.random() * waves.length)];
+    $("sfx-freq").value = Math.round(80 + Math.random() * 1100);
+    $("sfx-dur").value = (0.08 + Math.random() * 0.4).toFixed(2);
+    $("sfx-att").value = (0.001 + Math.random() * 0.05).toFixed(3);
+    $("sfx-dec").value = (0.01 + Math.random() * 0.15).toFixed(2);
+    $("sfx-sus").value = (Math.random() * 0.8).toFixed(2);
+    $("sfx-rel").value = (0.05 + Math.random() * 0.25).toFixed(2);
+    $("sfx-slide").value = Math.round((Math.random() - 0.5) * 3000);
+    $("sfx-duty").value = (0.2 + Math.random() * 0.6).toFixed(2);
+  }
+  updateSfxLabels();
+  previewSynthSound();
+};
+
+// Вставка формы defsound-synth в текущий код
+$("b-sfx-insert").onclick = () => {
+  const p = getSfxParams();
+  const name = "sfx-" + p.wave + "-" + Math.round(p.freq);
+  const form = `(defsound-synth '${name} '${p.wave} ${p.freq} ${p.dur} ${p.att} ${p.dec} ${p.sus} ${p.rel} ${p.slide} ${p.duty})\n`;
+  const codeArea = $("code");
+  const pos = codeArea.selectionStart || codeArea.value.length;
+  codeArea.value = codeArea.value.slice(0, pos) + form + codeArea.value.slice(pos);
+  document.querySelector('[data-t="code"]').click();
+  toast("Вставлено: " + name);
+};
+
+// Отправка в живой движок через eval
+$("b-sfx-send").onclick = () => {
+  const p = getSfxParams();
+  const name = "sfx-" + p.wave + "-" + Math.round(p.freq);
+  const form = `(defsound-synth '${name} '${p.wave} ${p.freq} ${p.dur} ${p.att} ${p.dec} ${p.sus} ${p.rel} ${p.slide} ${p.duty})`;
+  evalLisp(form);
+  toast("Отправлено в движок: " + name);
+};
+
+// Отрисовка списка звуков движка
+let lastSoundListJson = "";
+function renderAudioSounds(sounds) {
+  const curJson = JSON.stringify(sounds);
+  if (curJson === lastSoundListJson) return;
+  lastSoundListJson = curJson;
+
+  $("audio-count-badge").textContent = sounds.length;
+  const tbody = $("audio-sounds-body");
+  if (!sounds.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--dim);text-align:center;padding:12px">Звуки ещё не зарегистрированы</td></tr>';
+    return;
+  }
+  tbody.innerHTML = "";
+  for (const s of sounds) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td style="color:var(--dim)">#${s.id}</td>
+      <td style="color:var(--acc);font-weight:700">${escapeHtml(s.name)}</td>
+      <td>${s.duration.toFixed(2)} с</td>
+      <td style="color:var(--dim)">${s.sample_rate} Гц ${s.channels === 1 ? 'моно' : 'стерео'}</td>
+      <td><button class="btn-play-sm" onclick="playSound(${s.id})">▶ Play</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
 /* ───────────────────────── цикл опроса ───────────────────────── */
 let frameTick = 0;
 async function poll() {
@@ -750,8 +1356,35 @@ async function poll() {
     $("s-frame").textContent = st.frame;
     $("s-fps").textContent = Math.round(st.fps);
     $("s-dc").textContent = st.drawcalls;
-    $("paused-tag").style.display = st.paused ? "block" : "none";
-    $("b-pause").textContent = st.paused ? "▶ Пуск" : "⏸ Пауза";
+    isPaused = !!st.paused;
+    $("paused-tag").style.display = isPaused ? "block" : "none";
+    $("b-pause").textContent = isPaused ? "▶ Пуск" : "⏸ Пауза";
+
+    // Опрос аудио-событий игры
+    try {
+      const audioEvs = await api("/api/audio-events?since=" + lastAudioSeq);
+      for (const ev of audioEvs || []) {
+        if (ev.id > lastAudioSeq) lastAudioSeq = ev.id;
+        if (liveAudioEnabled && ev.action === "play") {
+          playSound(ev.sound_id, ev.volume, ev.pitch, ev.pan);
+        }
+      }
+    } catch (_) {}
+
+    // Обновление аудио-статистики и таблицы
+    if (st.audio) {
+      $("audio-voices-stat").textContent = st.audio.voices || 0;
+      renderAudioSounds(st.audio.sounds || []);
+      if (!window._audioVolInit && st.audio.master_volume !== undefined) {
+        window._audioVolInit = true;
+        masterVolume = st.audio.master_volume;
+        $("audio-master-vol").value = masterVolume;
+        $("audio-master-val").textContent = Math.round(masterVolume * 100) + "%";
+        if (masterGainNode && audioCtx) {
+          masterGainNode.gain.setValueAtTime(masterVolume, audioCtx.currentTime);
+        }
+      }
+    }
 
     // камера и префабы (этап 6): игра отдаёт хуки (editor-camera)/(prefab-list)
     if (st.camera && st.camera !== "null") {
@@ -797,10 +1430,41 @@ async function poll() {
     const newAssets = (st.assets || []).join("\u0000");
     if (newAssets !== assets.join("\u0000")) { assets = st.assets || []; renderAssets(); }
 
-    frameTick++;
-    if (frameTick % 2 === 0) $("view").src = "/frame.png?t=" + Date.now();
+    if (st.paused !== undefined && st.paused !== isPaused) {
+      isPaused = st.paused;
+      $("b-pause").textContent = isPaused ? "▶ Пуск" : "⏸ Пауза";
+      $("paused-tag").style.display = isPaused ? "block" : "none";
+    }
   } catch (_) { /* сервер мог быть перезапущен */ }
 }
+
+/* ───────────────────────── непрерывный плавный видеопоток ───────────────────────── */
+let frameInFlight = false;
+let streamTimer = null;
+
+function streamFrame() {
+  if (frameInFlight) return;
+  frameInFlight = true;
+  const img = new Image();
+  img.onload = () => {
+    $("view").src = img.src;
+    frameInFlight = false;
+    gizmoBox();
+    drawGizmo();
+    const delay = isPaused ? 150 : 25;
+    clearTimeout(streamTimer);
+    streamTimer = setTimeout(streamFrame, delay);
+  };
+  img.onerror = () => {
+    frameInFlight = false;
+    clearTimeout(streamTimer);
+    streamTimer = setTimeout(streamFrame, 200);
+  };
+  img.src = "/frame.png?t=" + Date.now();
+}
+
+applyViewportScale();
+streamFrame();
 setInterval(poll, 250);
 poll();
 logLine("редактор подключён. Всё живое: правь код — мир меняется без перезапуска.", "sys");

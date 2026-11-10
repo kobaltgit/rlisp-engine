@@ -10,6 +10,7 @@
 (load "textures.lisp")   ;; системный DSL v0.3: процедурные текстуры, UV, спрайты
 (load "materials.lisp")  ;; системный DSL этапа 7: defmaterial/use-material! (alpha-test, блик, тайлинг)
 (load "editor.lisp")     ;; системный DSL v0.3: мост редактора и MCP (scene/spawn/set)
+(load "audio.lisp")      ;; системный DSL v0.3: аудиосистема, SFX пресеты, микшер
 (load "game3d.lisp")     ;; уровень 4: 3D-игра «ORBITAL»
 
 (print "rlisp-engine 3D: HAL(+GPU) → интерпретатор → render3d DSL → ORBITAL; update/draw на Lisp")

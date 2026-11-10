@@ -51,6 +51,8 @@ pub struct Bridge {
     pub camera: Mutex<String>,
     /// Этап 6: префабы игры — JSON от хука (prefab-list), «null» если хука нет.
     pub prefabs: Mutex<String>,
+    /// Аудиосистема: доступ к микшеру и событиям для браузера
+    pub audio: Mutex<Option<Arc<Mutex<crate::audio::AudioMixer>>>>,
 }
 
 impl Bridge {
@@ -74,7 +76,12 @@ impl Bridge {
             assets: Mutex::new(Vec::new()),
             camera: Mutex::new("null".into()),
             prefabs: Mutex::new("null".into()),
+            audio: Mutex::new(None),
         })
+    }
+
+    pub fn set_audio(&self, audio: Arc<Mutex<crate::audio::AudioMixer>>) {
+        *self.audio.lock().unwrap() = Some(audio);
     }
 
     pub fn log_line(&self, s: String) {
@@ -301,6 +308,37 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
                 // этап 6: камера для гизмо и префабы для drag-n-drop
                 ("camera", Json::Str(camera)),
                 ("prefabs", Json::Str(prefabs)),
+                // аудиосистема: список звуков, число голосов, мастер-громкость
+                (
+                    "audio",
+                    if let Some(audio_arc) = bridge.audio.lock().unwrap().as_ref() {
+                        let m = audio_arc.lock().unwrap();
+                        let sounds_arr: Vec<Json> = m
+                            .sounds
+                            .values()
+                            .map(|s| {
+                                Json::obj(vec![
+                                    ("id", Json::int(s.id as i64)),
+                                    ("name", Json::str(&s.name)),
+                                    ("duration", Json::num(s.duration_secs() as f64)),
+                                    ("sample_rate", Json::int(s.sample_rate as i64)),
+                                    ("channels", Json::int(s.channels as i64)),
+                                ])
+                            })
+                            .collect();
+                        Json::obj(vec![
+                            ("sounds", Json::Arr(sounds_arr)),
+                            ("voices", Json::int(m.voices.len() as i64)),
+                            ("master_volume", Json::num(m.master_volume as f64)),
+                        ])
+                    } else {
+                        Json::obj(vec![
+                            ("sounds", Json::Arr(vec![])),
+                            ("voices", Json::int(0)),
+                            ("master_volume", Json::num(1.0)),
+                        ])
+                    },
+                ),
             ]);
             http_json(&mut stream, &j);
         }
@@ -407,6 +445,45 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             bridge.cmds.lock().unwrap().push((id, code));
             bridge.log_line(format!("[save-scene #{id}] {fname}"));
             http_json(&mut stream, &Json::obj(vec![("id", Json::int(id as i64))]));
+        }
+        ("GET", "/api/audio-events") => {
+            let since: u64 = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let events = if let Some(audio_arc) = bridge.audio.lock().unwrap().as_ref() {
+                let m = audio_arc.lock().unwrap();
+                let evs: Vec<Json> = m
+                    .events
+                    .iter()
+                    .filter(|e| e.id > since)
+                    .map(|e| {
+                        Json::obj(vec![
+                            ("id", Json::int(e.id as i64)),
+                            ("sound_id", Json::int(e.sound_id as i64)),
+                            ("name", Json::str(&e.name)),
+                            ("volume", Json::num(e.volume as f64)),
+                            ("pitch", Json::num(e.pitch as f64)),
+                            ("pan", Json::num(e.pan as f64)),
+                            ("action", Json::str(&e.action)),
+                        ])
+                    })
+                    .collect();
+                evs
+            } else {
+                vec![]
+            };
+            http_json(&mut stream, &Json::Arr(events));
+        }
+        ("GET", "/api/sound-wav") => {
+            let id: u64 = q.get("id").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let wav_bytes = if let Some(audio_arc) = bridge.audio.lock().unwrap().as_ref() {
+                let m = audio_arc.lock().unwrap();
+                m.sounds.get(&id).map(|s| crate::audio::WavCodec::encode(s))
+            } else {
+                None
+            };
+            match wav_bytes {
+                Some(bytes) => http_res(&mut stream, "200 OK", "audio/wav", bytes),
+                None => http_err(&mut stream, "404", "звук не найден"),
+            }
         }
         _ => http_err(&mut stream, "404", "нет такого маршрута"),
     }
@@ -624,8 +701,9 @@ mod tests {
 
         // сериализация во временный файл: 3 формы (2 врага + игрок)
         let path = std::env::temp_dir().join("rlisp_scene_roundtrip.lisp");
+        let path_str = path.to_string_lossy().replace('\\', "/");
         let res = eval_string(
-            &format!("(editor-save-scene \"{}\")", path.display()),
+            &format!("(editor-save-scene \"{}\")", path_str),
             &cell,
         )
         .unwrap();
@@ -647,7 +725,7 @@ mod tests {
 
         // round-trip: (load) файла в живом окружении → те же сущности и позиции
         eval_string("(set! *spawned* '())", &cell).unwrap();
-        eval_string(&format!("(load \"{}\")", path.display()), &cell).unwrap();
+        eval_string(&format!("(load \"{}\")", path_str), &cell).unwrap();
         let spawned = eval_string("*spawned*", &cell).unwrap();
         assert_eq!(fmt_value(&spawned), "((grunt 4.25 7.5) (brute 11.5 -3.0))");
         let px = eval_string("(table-get *stub-player* 'x 99)", &cell).unwrap();

@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 /// Текстура «GPU» (v0.3): RGBA8, загружается из PNG или генерируется на Lisp.
 #[derive(Clone)]
@@ -97,6 +98,8 @@ pub struct Hal {
     /// Накопленное время GPU: (submit, readback) в нс — для --bench
     pub gpu_submit_ns: u128,
     pub gpu_readback_ns: u128,
+    pub audio: Arc<Mutex<crate::audio::AudioMixer>>,
+    pub audio_device: Option<crate::audio::NativeAudioDevice>,
 }
 
 impl Hal {
@@ -107,6 +110,12 @@ impl Hal {
     pub fn with_backend(out: OutputMode, w: usize, h: usize, backend: Backend) -> Hal {
         let w = w.max(8);
         let h = h.max(8);
+        let audio = Arc::new(Mutex::new(crate::audio::AudioMixer::new()));
+        let audio_device = if cfg!(test) {
+            None
+        } else {
+            crate::audio::NativeAudioDevice::start(audio.clone())
+        };
         let mut hal = Hal {
             w,
             h,
@@ -124,6 +133,8 @@ impl Hal {
             res: GpuResources::default(),
             gpu_submit_ns: 0,
             gpu_readback_ns: 0,
+            audio,
+            audio_device,
         };
         hal.fill_all(8, 8, 18);
         hal
@@ -994,9 +1005,10 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     });
 
     // — загрузка Lisp-файлов поверх HAL (используется main.lisp) —
+    let root_sys = root.clone();
     def(env, "sys-load", move |args| {
         need(args, 1)?;
-        let p = resolve_path(&str_val(&args[0]), &root);
+        let p = resolve_path(&str_val(&args[0]), &root_sys);
         load_file(
             &p,
             &crate::interp::CoreCtx {
@@ -1007,6 +1019,126 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         )
         .map(|_| Value::Bool(true))
         .map_err(|e| format!("sys-load: {}", e))
+    });
+
+    // ——— Аудиосистема: загрузка WAV, чиптюн-синтезатор, управление голосами ———
+    let h = hal.clone();
+    let root_clone = root.clone();
+    def(env, "sound-load", move |args| {
+        need(args, 1)?;
+        let path_str = str_val(&args[0]);
+        let resolved = resolve_path(&path_str, &root_clone);
+        let bytes = std::fs::read(&resolved)
+            .map_err(|e| format!("sound-load {}: {}", resolved.display(), e))?;
+        let name = resolved
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sound")
+            .to_string();
+        let sound = crate::audio::WavCodec::decode(0, name, &bytes)?;
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        let id = audio.add_sound(sound);
+        Ok(Value::Int(id as i64))
+    });
+
+    let h = hal.clone();
+    def(env, "sound-synth", move |args| {
+        need(args, 3)?;
+        let wave_str = str_val(&args[0]);
+        let wave = crate::audio::Waveform::from_str(&wave_str)
+            .ok_or_else(|| format!("sound-synth: неизвестная форма волны '{}' (square, saw, triangle, sine, noise)", wave_str))?;
+        let freq = num_val(&args[1])? as f32;
+        let duration = num_val(&args[2])? as f32;
+        let attack = args.get(3).map(num_val).transpose()?.unwrap_or(0.01) as f32;
+        let decay = args.get(4).map(num_val).transpose()?.unwrap_or(0.05) as f32;
+        let sustain = args.get(5).map(num_val).transpose()?.unwrap_or(0.5) as f32;
+        let release = args.get(6).map(num_val).transpose()?.unwrap_or(0.1) as f32;
+        let pitch_slide = args.get(7).map(num_val).transpose()?.unwrap_or(0.0) as f32;
+        let duty_cycle = args.get(8).map(num_val).transpose()?.unwrap_or(0.5) as f32;
+
+        let params = crate::audio::SynthParams {
+            wave,
+            freq,
+            duration,
+            attack,
+            decay,
+            sustain,
+            release,
+            pitch_slide,
+            duty_cycle,
+        };
+        let sound = crate::audio::synth_sound(0, format!("synth_{}_{:.0}hz", wave.as_str(), freq), &params);
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        let id = audio.add_sound(sound);
+        Ok(Value::Int(id as i64))
+    });
+
+    let h = hal.clone();
+    def(env, "sound-play", move |args| {
+        need(args, 1)?;
+        let sound_id = int_val(&args[0])? as u64;
+        let vol = args.get(1).map(num_val).transpose()?.unwrap_or(1.0) as f32;
+        let pitch = args.get(2).map(num_val).transpose()?.unwrap_or(1.0) as f32;
+        let pan = args.get(3).map(num_val).transpose()?.unwrap_or(0.0) as f32;
+        let looping = args.get(4).map(|v| match v { Value::Bool(b) => *b, _ => false }).unwrap_or(false);
+
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        let voice_id = audio.play(sound_id, vol, pitch, pan, looping)?;
+        Ok(Value::Int(voice_id as i64))
+    });
+
+    let h = hal.clone();
+    def(env, "sound-stop", move |args| {
+        need(args, 1)?;
+        let voice_id = int_val(&args[0])? as u64;
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        audio.stop(voice_id);
+        Ok(Value::Nil)
+    });
+
+    let h = hal.clone();
+    def(env, "sound-stop-all", move |_args| {
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        audio.stop_all();
+        Ok(Value::Nil)
+    });
+
+    let h = hal.clone();
+    def(env, "sound-volume", move |args| {
+        need(args, 2)?;
+        let voice_id = int_val(&args[0])? as u64;
+        let vol = num_val(&args[1])? as f32;
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        audio.set_voice_volume(voice_id, vol);
+        Ok(Value::Nil)
+    });
+
+    let h = hal.clone();
+    def(env, "sound-master-volume", move |args| {
+        let hal = h.borrow();
+        let mut audio = hal.audio.lock().unwrap();
+        if let Some(arg) = args.get(0) {
+            let vol = num_val(arg)? as f32;
+            audio.set_master_volume(vol);
+        }
+        Ok(Value::Float(audio.master_volume as f64))
+    });
+
+    let h = hal.clone();
+    def(env, "sound-stats", move |_args| {
+        let hal = h.borrow();
+        let audio = hal.audio.lock().unwrap();
+        let mut tbl = HashMap::new();
+        tbl.insert("voices".into(), Value::Int(audio.voices.len() as i64));
+        tbl.insert("sounds".into(), Value::Int(audio.sounds.len() as i64));
+        tbl.insert("master-volume".into(), Value::Float(audio.master_volume as f64));
+        Ok(Value::Table(Rc::new(RefCell::new(tbl))))
     });
 }
 
@@ -1209,5 +1341,62 @@ mod tests {
         let mut hal = Hal::new(OutputMode::Silent, 8, 8);
         hal.clear_all(4, 5, 6);
         assert_eq!(&hal.fb[0..4], &[4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn audio_lisp_primitives_flow() {
+        let env = crate::interp::env_new(None);
+        let hal = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 8, 8)));
+        register_hal(env, &hal, PathBuf::from("."));
+
+        // Создание звука через sound-synth
+        let synth_fn = crate::interp::env_get(env, "sound-synth").unwrap();
+        let sid_val = crate::interp::apply(
+            &synth_fn,
+            &[
+                Value::Str("sawtooth".into()),
+                Value::Float(440.0),
+                Value::Float(0.1),
+            ],
+            0,
+        )
+        .expect("sound-synth");
+        let sid = match sid_val {
+            Value::Int(n) => n,
+            other => panic!("ожидался Int id, получено: {}", fmt_value(&other)),
+        };
+        assert!(sid > 0);
+
+        // Проверка воспроизведения
+        let play_fn = crate::interp::env_get(env, "sound-play").unwrap();
+        let vid_val = crate::interp::apply(&play_fn, &[Value::Int(sid), Value::Float(0.9)], 0)
+            .expect("sound-play");
+        let vid = match vid_val {
+            Value::Int(n) => n,
+            other => panic!("ожидался voice_id Int, получено: {}", fmt_value(&other)),
+        };
+        assert!(vid > 0);
+
+        // Статистика
+        let stats_fn = crate::interp::env_get(env, "sound-stats").unwrap();
+        let stats_val = crate::interp::apply(&stats_fn, &[], 0).expect("sound-stats");
+        match stats_val {
+            Value::Table(t) => {
+                let tb = t.borrow();
+                assert!(matches!(tb.get("sounds"), Some(Value::Int(1))));
+                assert!(matches!(tb.get("voices"), Some(Value::Int(1))));
+            }
+            other => panic!("sound-stats должен вернуть таблицу: {}", fmt_value(&other)),
+        }
+
+        // Остановка звука
+        let stop_fn = crate::interp::env_get(env, "sound-stop").unwrap();
+        crate::interp::apply(&stop_fn, &[Value::Int(vid)], 0).expect("sound-stop");
+
+        let stats_val2 = crate::interp::apply(&stats_fn, &[], 0).expect("sound-stats");
+        if let Value::Table(t) = stats_val2 {
+            let tb = t.borrow();
+            assert!(matches!(tb.get("voices"), Some(Value::Int(0))));
+        }
     }
 }
