@@ -1346,9 +1346,35 @@ pub fn resolve_path(p: &str, root: &Path) -> PathBuf {
     c1
 }
 
+/// Модели, вшитые в бинарник (этап 22): браузерная песочница не имеет
+/// файловой системы — те же строки-пути отдают содержимое из embed.
+/// Нативные запуски читают реальные файлы (embed — фолбэк, если файла нет).
+pub static EMBEDDED_FILES: &[(&str, &[u8])] = &[
+    (
+        "../models/fox.gltf",
+        include_bytes!("../assets/models/fox.gltf"),
+    ),
+    (
+        "../models/Fox.bin",
+        include_bytes!("../assets/models/Fox.bin"),
+    ),
+    (
+        "../models/Texture.png",
+        include_bytes!("../assets/models/Texture.png"),
+    ),
+];
+
+pub fn embedded_lookup(name: &str) -> Option<&'static [u8]> {
+    EMBEDDED_FILES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, b)| *b)
+}
+
 /// wasm-песочница: Lisp-исходники, встроенные в бинарь (fs недоступен).
 /// static + экспорт-зонд в wasm.rs держат данные живыми против DCE.
 #[cfg(target_arch = "wasm32")]
+
 pub static EMBEDDED_LISP: &[(&str, &str)] = &[
     ("core.lisp", include_str!("../assets/lisp/core.lisp")),
     ("ecs.lisp", include_str!("../assets/lisp/ecs.lisp")),

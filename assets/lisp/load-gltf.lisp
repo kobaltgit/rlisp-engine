@@ -99,6 +99,7 @@
         ((string=? type "VEC2") 2)
         ((string=? type "VEC3") 3)
         ((string=? type "VEC4") 4)
+        ((string=? type "MAT4") 16)
         (else (error "gltf: тип accessor не поддержан" type))))
 
 ;; ——— буферы и accessors ———
@@ -154,14 +155,24 @@
         (take (+ i 1) (string-append acc (string-at path i)))))
   (take 0 ""))
 
+;; PBR-блок материала: baseColorTexture/baseColorFactor живут внутри
+;; pbrMetallicRoughness (спецификация glTF 2.0); верхний уровень — фолбэк
+(define (gltf-pbr mat)
+  (if (table-has? mat "pbrMetallicRoughness")
+      (table-get mat "pbrMetallicRoughness")
+      mat))
+
 ;; ——— текстуры (PNG: файл или data-URI) ———
 
 (define (gltf-texture doc base tex-idx)
+  ;; texture info: {index: N} (спецификация glTF 2.0; "source" — фолбэк)
   (cond ((or (not tex-idx) (< tex-idx 0)) 0)
         (else
          (let* ((tex (nth (table-get doc "textures" '()) tex-idx))
                 (img (nth (table-get doc "images" '())
-                          (table-get tex "source" 0)))
+                          (if (table-has? tex "index")
+                              (table-get tex "index" 0)
+                              (table-get tex "source" 0))))
                 (uri (table-get img "uri" #f)))
            (cond ((not uri) 0) ; изображения из bufferView не поддержаны
                  ((string=? (gltf-prefix uri 5) "data:")
@@ -279,14 +290,15 @@
                       (nth (table-get doc "materials" '())
                            (table-get prim "material"))
                       #f))
-             (bcf (if mat
-                      (table-get mat "baseColorFactor"
+             (pbr (if mat (gltf-pbr mat) #f))
+             (bcf (if pbr
+                      (table-get pbr "baseColorFactor"
                                  (list 1.0 1.0 1.0 1.0))
                       (list 1.0 1.0 1.0 1.0)))
-             (tex-i (if mat
-                        (table-get (table-get mat "baseColorTexture"
+             (tex-i (if pbr
+                        (table-get (table-get pbr "baseColorTexture"
                                               (make-table))
-                                   "source" -1)
+                                   "index" -1)
                         -1))
              (m (make-table)))
         (table-set! m 'pos pos2)
@@ -368,3 +380,379 @@
                             model mvp r g b))
             (go (cdr lst))))))
   (go ms))
+
+
+;; ——— скиннинг и анимации (этап 21) ———
+;; Подмножество: skin.joints + inverseBindMatrices (MAT4), JOINTS_0
+;; (UNSIGNED_SHORT/UNSIGNED_BYTE VEC4), WEIGHTS_0 (FLOAT VEC4),
+;; анимации — каналы rotation/translation/scale с ЛИНЕЙНОЙ интерполяцией
+;; (CUBICSPLINE/STEP не поддержаны), кватернионы — nlerp с коррекцией знака.
+;; Иерархия: мир узлов считается РЕКУРСИВНО от корней сцены (порядок узлов
+;; в файле не важен), кэша поз нет — сцены маленькие.
+
+;; примитив для скина: вершины в bind-пространстве (запекания нет),
+;; JOINTS_0/WEIGHTS_0, индексы — при отсутствии генерируются последовательно
+(define (gltf-prim-skin doc bufs prim)
+  (let* ((attrs (table-get prim "attributes"))
+         (accs (table-get doc "accessors" '()))
+         (pos-i (table-get attrs "POSITION" -1)))
+    (if (< pos-i 0)
+        (error "gltf-skin: нет POSITION")
+        #f)
+    (let* ((pos-a (nth accs pos-i))
+           (n (table-get pos-a "count" 0))
+           (pos (gltf-acc doc bufs pos-a))
+           (uv (if (table-has? attrs "TEXCOORD_0")
+                   (gltf-acc doc bufs (nth accs (table-get attrs "TEXCOORD_0")))
+                   #f))
+           (joints (gltf-acc doc bufs (nth accs (table-get attrs "JOINTS_0"))))
+           (weights (gltf-acc doc bufs (nth accs (table-get attrs "WEIGHTS_0"))))
+           (m (make-table)))
+      (table-set! m 'pos pos)
+      (table-set! m 'uv uv)
+      (table-set! m 'joints joints)
+      (table-set! m 'weights weights)
+      (table-set! m 'verts n)
+      ;; неиндексированный примитив (Fox): трисы идут потоком вершин
+      (table-set! m 'tris (/ n 3))
+      m)))
+
+;; inverseBindMatrices accessor (column-major) → F32Vec 16×J row-major
+(define (gltf-ibm doc bufs skin)
+  (let ((a (nth (table-get doc "accessors" '())
+                (table-get skin "inverseBindMatrices" 0)))
+        (J (length (table-get skin "joints" '()))))
+    (let ((col (gltf-acc doc bufs a))
+          (out (make-f32vec (* 16 J) 0.0)))
+      (dotimes (j J)
+        (dotimes (r 16)
+          ;; col-major элемент (r mod 4, r div 4) → row-major слот r
+          (f32set! out (+ (* j 16) r)
+                   (f32ref col (+ (* j 16)
+                                  (+ (* (mod r 4) 4) (floor (/ r 4))))))))
+      out)))
+
+;; x входит в список? (в диалекте нет member)
+(define (gltf-in-list x lst)
+  (cond ((null? lst) #f)
+        ((= x (car lst)) #t)
+        (else (gltf-in-list x (cdr lst)))))
+
+;; иерархия узлов: родители (f32vec, -1 = корень) + локальные матрицы
+;; + базовые TRS-компоненты (анимация замещает только свои каналы)
+(define (gltf-hierarchy doc)
+  (let* ((nodes (table-get doc "nodes" '()))
+         (n (length nodes)))
+    (let ((parents (make-f32vec n -1.0))
+          (locals '())
+          (bts '()) (brs '()) (bss '()))
+      (define (go i)
+        (if (>= i n)
+            #f
+            (let ((node (nth nodes i)))
+              (set! locals (append locals (list (gltf-node-mat node))))
+              (set! bts (append bts (list (table-get node "translation" (list 0 0 0)))))
+              (set! brs (append brs (list (table-get node "rotation" (list 0 0 0 1)))))
+              (set! bss (append bss (list (table-get node "scale" (list 1 1 1)))))
+              (go (+ i 1)))))
+      (go 0)
+      ;; родители — второй проход (порядок узлов не важен)
+      (define (go2 i)
+        (if (>= i n)
+            #f
+            (let ((node (nth nodes i)))
+              (define (find-parent k)
+                (cond ((>= k n) -1.0)
+                      ((gltf-in-list i (table-get (nth nodes k) "children" '()))
+                       (* k 1.0))
+                      (else (find-parent (+ k 1)))))
+              (f32set! parents i (find-parent 0))
+              (go2 (+ i 1)))))
+      (go2 0)
+      (list parents locals bts brs bss))))
+
+;; (gltf-load-skin путь) — скин-модель + анимации, кэш по пути
+(define (gltf-load-skin path)
+  (if (table-has? *gltf-cache* path)
+      (table-get *gltf-cache* path)
+      (let* ((doc (json-parse (file-read path)))
+             (ver (table-get (table-get doc "asset" (make-table)) "version" ""))
+             (base (gltf-dir path))
+             (bufs (map (lambda (b) (gltf-buffer-bytes base b))
+                        (table-get doc "buffers" '()))))
+        (if (string=? (gltf-prefix ver 1) "2")
+            #f
+            (error "gltf-skin: ожидался glTF 2.0"))
+        ;; первый узел сцены с мешем и скином
+        (let* ((nodes (table-get doc "nodes" '()))
+               (scene (nth (table-get doc "scenes" '()) (table-get doc "scene" 0)))
+               (mesh-node (gltf-find-skin-node nodes (table-get scene "nodes" '())))
+               (node (nth nodes mesh-node))
+               (mesh (nth (table-get doc "meshes" '()) (table-get node "mesh")))
+               (prim (car (table-get mesh "primitives" '())))
+               (skin (nth (table-get doc "skins" '()) (table-get node "skin")))
+               (jnodes (table-get skin "joints" '()))
+               (mat (if (table-has? prim "material")
+                        (nth (table-get doc "materials" '()) (table-get prim "material"))
+                        #f))
+               (pbr (if mat (gltf-pbr mat) #f))
+               (tex-i (if pbr
+                          (table-get (table-get pbr "baseColorTexture" (make-table)) "index" -1)
+                          -1))
+               (pr (gltf-prim-skin doc bufs prim))
+               (hi (gltf-hierarchy doc))
+               (m (make-table)))
+          (table-set! m 'pos (table-get pr 'pos))
+          (table-set! m 'uv (table-get pr 'uv))
+          (table-set! m 'joints (table-get pr 'joints))
+          (table-set! m 'weights (table-get pr 'weights))
+          (table-set! m 'verts (table-get pr 'verts))
+          (table-set! m 'tris (table-get pr 'tris))
+          (table-set! m 'tex (gltf-texture doc base tex-i))
+          (table-set! m 'jnodes jnodes)
+          (table-set! m 'ibm (gltf-ibm doc bufs skin))
+          (table-set! m 'node-parent (car hi))
+          (table-set! m 'node-local (cadr hi))
+          (table-set! m 'node-t (nth hi 2))
+          (table-set! m 'node-r (nth hi 3))
+          (table-set! m 'node-s (nth hi 4))
+          (table-set! m 'mesh-node mesh-node)
+          (table-set! m 'anims (gltf-anims doc bufs))
+          (table-set! *gltf-cache* path m)
+          m))))
+
+(define (gltf-find-skin-node nodes roots)
+  (define (go idxs)
+    (if (null? idxs)
+        (error "gltf-skin: узел с мешем+скином не найден")
+        (let ((node (nth nodes (car idxs))))
+          (if (and (table-has? node "mesh") (table-has? node "skin"))
+              (car idxs)
+              (go (cdr idxs))))))
+  (go roots))
+
+;; ——— анимации: каналы (node path times values count), линейные ———
+
+(define (gltf-anim-chan doc bufs anim)
+  (define (go samplers chans acc)
+    (if (null? chans)
+        acc
+        (let* ((ch (car chans))
+               (samp (nth (table-get anim "samplers" '())
+                          (table-get ch "sampler" 0)))
+               (target (table-get ch "target" (make-table)))
+               (times (gltf-acc doc bufs
+                                (nth (table-get doc "accessors" '())
+                                     (table-get samp "input" 0))))
+               (out-a (nth (table-get doc "accessors" '())
+                           (table-get samp "output" 0)))
+               (nc (gltf-comp-count (table-get out-a "type" "SCALAR")))
+               (vals (gltf-acc doc bufs out-a)))
+          (go samplers
+              (cdr chans)
+              (append acc
+                      (list (list (table-get target "node" -1)
+                                  (table-get target "path" "")
+                                  times vals
+                                  (table-get out-a "count" 0) nc)))))))
+  (go (table-get anim "samplers" '()) (table-get anim "channels" '()) '()))
+
+(define (gltf-anims doc bufs)
+  (define (go anims acc)
+    (if (null? anims)
+        acc
+        (let* ((a (car anims))
+               (chans (gltf-anim-chan doc bufs a))
+               ;; длительность: max последнего времени
+               (dur 0.0))
+          (define (find-dur chans)
+            (if (null? chans)
+                #f
+                (let* ((c (car chans))
+                       (times (nth c 2))
+                       (n (nth c 4)))
+                  (if (> n 0)
+                      (set! dur (max dur (f32ref times (- n 1))))
+                      #f)
+                  (find-dur (cdr chans)))))
+          (find-dur chans)
+          (go (cdr anims)
+              (append acc (list (list (table-get a "name" "") dur chans)))))))
+  (go (table-get doc "animations" '()) '()))
+
+;; остаток для дробного времени (mod движка целочисленный)
+(define (gltf-frac time dur)
+  (- time (* dur (floor (/ time dur)))))
+
+;; линейная выборка канала в момент t → список nc значений
+(define (gltf-sample times vals count nc t)
+  (define (go i)
+    (if (or (>= i (- count 1)) (<= (f32ref times (+ i 1)) t))
+        (min i (- count 2))
+        (go (+ i 1))))
+  (if (<= count 1)
+      (let ((acc '()))
+        (dotimes (c nc) (set! acc (append acc (list (f32ref vals c)))))
+        acc)
+      (let* ((i (go 0))
+             (t0 (f32ref times i))
+             (t1 (f32ref times (+ i 1)))
+             (f (if (> (- t1 t0) 1e-6) (/ (- t t0) (- t1 t0)) 0.0))
+             (acc '()))
+        (dotimes (c nc)
+          (let ((v0 (f32ref vals (+ (* i nc) c)))
+                (v1 (f32ref vals (+ (* (+ i 1) nc) c))))
+            (set! acc (append acc (list (+ (* v0 (- 1.0 f)) (* v1 f)))))))
+        acc)))
+
+;; нормировка кватерниона (lerp двух единичных не единичен —
+;; без этого конечности сжимаются/растягиваются)
+(define (gltf-quat-norm q)
+  (let ((x (car q)) (y (cadr q)) (z (caddr q)) (w (cadddr q)))
+    (let ((l (max 1e-9 (sqrt (+ (* x x) (* y y) (* z z) (* w w))))))
+      (list (/ x l) (/ y l) (/ z l) (/ w l)))))
+
+;; nlerp кватернионов с коррекцией знака (для канала rotation)
+(define (gltf-quat-nlerp q0 q1 f)
+  (let ((q1s (if (< (+ (* (car q0) (car q1))
+                       (* (cadr q0) (cadr q1))
+                       (* (caddr q0) (caddr q1))
+                       (* (cadddr q0) (cadddr q1)))
+                    0.0)
+                 (list (- (car q1)) (- (cadr q1)) (- (caddr q1)) (- (cadddr q1)))
+                 q1)))
+    (let ((x (+ (* (car q0) (- 1.0 f)) (* (car q1s) f)))
+          (y (+ (* (cadr q0) (- 1.0 f)) (* (cadr q1s) f)))
+          (z (+ (* (caddr q0) (- 1.0 f)) (* (caddr q1s) f)))
+          (w (+ (* (cadddr q0) (- 1.0 f)) (* (cadddr q1s) f))))
+      (let ((l (max 1e-9 (sqrt (+ (* x x) (* y y) (* z z) (* w w))))))
+        (list (/ x l) (/ y l) (/ z l) (/ w l))))))
+
+;; поза в момент time → (jmat mesh-world):
+;; локальные матрицы из иерархии, каналы анимации замещают TRS-компоненту,
+;; мир — рекурсивно от корней, сустав = мир × inverseBind
+(define (gltf-pose-skin model anim-name time)
+  ;; 1) замещения каналов анимации; 2) локальные матрицы (dotimes);
+  ;; 3) мир узла — цепочкой родителей снизу вверх (без рекурсии);
+  ;; 4) сустав = мир × inverseBind. Возврат: (jmat mesh-world)
+  (let* ((parents (table-get model 'node-parent))
+         (locals0 (table-get model 'node-local))
+         (nodes-n (length parents))
+         (anims (table-get model 'anims '()))
+         (jnodes (table-get model 'jnodes))
+         (J (length jnodes))
+         (ibm (table-get model 'ibm))
+         (over (make-table))
+         (dur 1.0)
+         (anim #f))
+    (define (find-anim as)
+      (cond ((null? as) #f)
+            ((string=? (car (car as)) anim-name) (car as))
+            (else (find-anim (cdr as)))))
+    (set! anim (find-anim anims))
+    (if anim
+        (begin
+          (set! dur (max 1e-3 (cadr anim)))
+          (define (apply-chans chans)
+            (if (null? chans)
+                #f
+                (let* ((c (car chans))
+                       (node (car c))
+                       (pth (cadr c))
+                       (times (nth c 2))
+                       (vals (nth c 3))
+                       (count (nth c 4))
+                       (nc (nth c 5))
+                       (key (string-append (number->string node) ":" pth)))
+                  (table-set! over key
+                              (gltf-sample times vals count nc
+                                           (gltf-frac time dur)))
+                  (apply-chans (cdr chans)))))
+          (apply-chans (caddr anim)))
+        #f)
+    ;; локальные матрицы с анимацией: канал замещает ТОЛЬКО свой компонент,
+    ;; базовые T/R/S узла сохраняются (иначе скелет схлопывается)
+    (let ((locals '())
+          (bts (table-get model 'node-t))
+          (brs (table-get model 'node-r))
+          (bss (table-get model 'node-s)))
+      (dotimes (i nodes-n)
+        (let* ((key-r (string-append (number->string i) ":rotation"))
+               (key-t (string-append (number->string i) ":translation"))
+               (key-s (string-append (number->string i) ":scale"))
+               (t (if (table-has? over key-t)
+                      (table-get over key-t)
+                      (nth bts i)))
+               (r (if (table-has? over key-r)
+                      (gltf-quat-norm (table-get over key-r))
+                      (nth brs i)))
+               (sc (if (table-has? over key-s)
+                       (table-get over key-s)
+                       (nth bss i))))
+          (set! locals (append locals (list (gltf-trs t r sc))))))
+      ;; мир узла: цепочка родителей, перемножение от корня вниз
+      (let ((worlds (make-f32vec (* 16 nodes-n) 0.0)))
+        (define (rows-of i)
+          ;; восстановить посчитанную матрицу как F32Vec
+          (let ((acc '()))
+            (dotimes (k 16)
+              (set! acc (append acc (list (f32ref worlds (+ (* i 16) k))))))
+            (f32-from-list acc)))
+        (define (world-of i)
+          (if (not (= (f32ref worlds (* i 16)) 0.0))
+              (rows-of i)
+              (let ((chain '()))
+                ;; вверх: (cons j acc) → (root ... i)
+                (define (up j acc)
+                  (let ((p (floor (f32ref parents j))))
+                    (if (< p 0)
+                        (cons j acc)
+                        (up p (cons j acc)))))
+                (set! chain (up i (list)))
+                ;; от корня вниз: m = I · local[root] · local[..] · local[i]
+                (let ((m (mat-identity)))
+                  (define (fold cs)
+                    (if (null? cs)
+                        #f
+                        (begin
+                          (set! m (mat4-mul m (nth locals (car cs))))
+                          (fold (cdr cs)))))
+                  (fold chain)
+                  (dotimes (k 16)
+                    (f32set! worlds (+ (* i 16) k) (f32ref m k)))
+                  m))))
+        ;; все узлы + суставы
+        (dotimes (i nodes-n) (world-of i))
+        (let ((jmat (make-f32vec (* 16 J) 0.0)))
+          (dotimes (j J)
+            (let ((w (world-of (nth jnodes j))))
+              (dotimes (r 4)
+                (dotimes (c 4)
+                  (let ((acc 0.0))
+                    (dotimes (k 4)
+                      (set! acc
+                            (+ acc (* (f32ref w (+ (* r 4) k))
+                                      (f32ref ibm (+ (* j 16) (+ (* k 4) c)))))))
+                    (f32set! jmat (+ (* j 16) (+ (* r 4) c)) acc))))))
+          ;; мир узла с мешем (у скиннед-моделей по спецификации glTF он
+          ;; игнорируется — используем только для MODEL-матрицы сцены)
+          (let ((mw (world-of (table-get model 'mesh-node)))
+                (mwv (make-f32vec 16 0.0)))
+            (dotimes (k 16)
+              (f32set! mwv k (f32ref mw k)))
+            (list jmat mwv)))))))
+;; отрисовка скин-модели в момент time:
+;; (draw-gltf-skin model anim time model-mat mvp tint-r tint-g tint-b)
+(define (draw-gltf-skin model anim time model-mat mvp tr tg tb)
+  (let* ((pose (gltf-pose-skin model anim time))
+         (jmat (car pose))
+         (mworld (cadr pose))
+         (full (mat4-mul model-mat mworld)))
+    (gpu3d-mesh-skin (table-get model 'pos)
+                     (table-get model 'joints)
+                     (table-get model 'weights)
+                     jmat
+                     full mvp
+                     (table-get model 'uv)
+                     (table-get model 'tex 0)
+                     tr tg tb)))

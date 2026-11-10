@@ -665,7 +665,14 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     let r = root.clone();
     def(env, "file-read", move |args| {
         need(args, 1)?;
-        let p = resolve_path(&str_val(&args[0]), &r);
+        let name = str_val(&args[0]);
+        if let Some(b) = crate::interp::embedded_lookup(&name) {
+            return Ok(Value::Str(
+                String::from_utf8(b.to_vec())
+                    .map_err(|_| "file-read: embed не UTF-8".to_string())?,
+            ));
+        }
+        let p = resolve_path(&name, &r);
         let s =
             std::fs::read_to_string(&p).map_err(|e| format!("file-read {}: {}", p.display(), e))?;
         Ok(Value::Str(s))
@@ -681,7 +688,10 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     let r = root.clone();
     def(env, "file-exists?", move |args| {
         need(args, 1)?;
-        Ok(Value::Bool(resolve_path(&str_val(&args[0]), &r).exists()))
+        let name = str_val(&args[0]);
+        Ok(Value::Bool(
+            crate::interp::embedded_lookup(&name).is_some() || resolve_path(&name, &r).exists(),
+        ))
     });
     let r = root.clone();
     def(env, "file-list", move |args| {
@@ -715,9 +725,14 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     let r = root.clone();
     def(env, "file-read-bytes", move |args| {
         need(args, 1)?;
-        let p = resolve_path(&str_val(&args[0]), &r);
-        let bytes =
-            std::fs::read(&p).map_err(|e| format!("file-read-bytes {}: {}", p.display(), e))?;
+        let name = str_val(&args[0]);
+        let bytes = match crate::interp::embedded_lookup(&name) {
+            Some(b) => b.to_vec(),
+            None => {
+                let p = resolve_path(&name, &r);
+                std::fs::read(&p).map_err(|e| format!("file-read-bytes {}: {}", p.display(), e))?
+            }
+        };
         Ok(Value::F32Vec(Rc::new(RefCell::new(
             bytes.into_iter().map(|b| b as f32).collect(),
         ))))
@@ -843,9 +858,14 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     let h = hal.clone();
     def(env, "texture-load", move |args| {
         need(args, 1)?;
-        let p = resolve_path(&str_val(&args[0]), &r);
-        let bytes =
-            std::fs::read(&p).map_err(|e| format!("texture-load {}: {}", p.display(), e))?;
+        let name = str_val(&args[0]);
+        let bytes = match crate::interp::embedded_lookup(&name) {
+            Some(b) => b.to_vec(),
+            None => {
+                let p = resolve_path(&name, &r);
+                std::fs::read(&p).map_err(|e| format!("texture-load {}: {}", p.display(), e))?
+            }
+        };
         let (px, w, hh) = png::decode_png(&bytes)?;
         let mut hal = h.borrow_mut();
         hal.tex.push(Tex {
