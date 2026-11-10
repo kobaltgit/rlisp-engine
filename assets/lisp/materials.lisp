@@ -59,12 +59,15 @@
                 (gpu3d-mat-tiling 1 1)))
           ;; cutout: 0 = выкл
           (gpu3d-alpha-test (table-get m ':alpha-test 0))
-          ;; затенение: :shading ('smooth или 'flat, по умолчанию 'flat)
-          (gpu3d-shading (table-get m ':shading 'flat))
-          ;; фильтрация текстуры: :filter ('nearest или 'bilinear, по умолчанию 'nearest)
-          (gpu3d-filter (table-get m ':filter 'nearest))
-          ;; пирамида мипмапов: :mipmaps (#t или #f, по умолчанию #f)
-          (gpu3d-mipmaps (table-get m ':mipmaps #f))
+          ;; затенение: переопределяется только если материал явно задал :shading
+          (let ((sh (table-get m ':shading #f)))
+            (if sh (gpu3d-shading sh) #f))
+          ;; фильтрация текстуры: переопределяется только если материал явно задал :filter
+          (let ((flt (table-get m ':filter #f)))
+            (if flt (gpu3d-filter flt) #f))
+          ;; пирамида мипмапов: переопределяется только если материал явно задал :mipmaps
+          (let ((mp (table-get m ':mipmaps #f)))
+            (if mp (gpu3d-mipmaps mp) #f))
           ;; блик поверх текущего света; нет :spec → чистый Lambert
           (let ((st (gpu3d-state)))
             (let ((l (table-get st 'light)))
@@ -82,9 +85,6 @@
 (define (material-reset!)
   (gpu3d-mat-tiling 1 1)
   (gpu3d-alpha-test 0)
-  (gpu3d-shading 'flat)
-  (gpu3d-filter 'nearest)
-  (gpu3d-mipmaps #f)
   (let ((st (gpu3d-state)))
     (let ((l (table-get st 'light)))
       (gpu3d-light (car l) (cadr l) (caddr l)

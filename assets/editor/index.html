@@ -232,6 +232,13 @@
       <div class="vbar-group">
         <button id="b-mipmaps" class="vbtn" title="Пирамида мипмапов: устраняет мерцание текстур на горизонте">Mipmaps: Выкл</button>
       </div>
+      <div class="vbar-group" title="Затенение нормалей: Flat (ретро-грани) или Smooth (сглаженный Блинн-Фонг)">
+        <button id="b-shading-flat" class="vbtn on">Flat</button>
+        <button id="b-shading-smooth" class="vbtn">Smooth</button>
+      </div>
+      <div class="vbar-group">
+        <button id="b-shadows" class="vbtn" title="Динамические тени (Shadow Mapping PCF 2x2)">☀️ Тени: Выкл</button>
+      </div>
       <span class="spacer"></span>
       <span id="vbar-focus-hint" class="vbar-hint">Кликните в экран для управления WASD / R</span>
       <button id="b-expand-view" class="vbtn" title="Развернуть/свернуть экран (F)">⛶ Развернуть</button>
@@ -950,9 +957,43 @@ $("b-scale-fit").onclick = () => applyViewportScale("fit");
 $("b-expand-view").onclick = toggleExpandView;
 window.addEventListener("resize", () => applyViewportScale());
 
-/* ─── переключение фильтрации текстур и мипмапов ─── */
+/* ─── переключение фильтрации текстур, мипмапов, шейдинга и теней ─── */
 let currentFilter = "nearest";
 let currentMipmaps = false;
+let currentShading = "flat";
+let currentShadows = false;
+
+function applyGpu3dState(str) {
+  if (!str || typeof str !== "string" || !str.includes(":backend")) return;
+  const mFilter = str.match(/:filter\s+"([^"]+)"/);
+  if (mFilter) {
+    currentFilter = mFilter[1];
+    if ($("b-filter-nearest")) $("b-filter-nearest").classList.toggle("on", currentFilter === "nearest");
+    if ($("b-filter-bilinear")) $("b-filter-bilinear").classList.toggle("on", currentFilter === "bilinear");
+  }
+  const mMip = str.match(/:mipmaps\s+(#[tf])/);
+  if (mMip) {
+    currentMipmaps = (mMip[1] === "#t");
+    if ($("b-mipmaps")) {
+      $("b-mipmaps").classList.toggle("on", currentMipmaps);
+      $("b-mipmaps").textContent = currentMipmaps ? "Mipmaps: Вкл" : "Mipmaps: Выкл";
+    }
+  }
+  const mShade = str.match(/:shading\s+"([^"]+)"/);
+  if (mShade) {
+    currentShading = mShade[1];
+    if ($("b-shading-flat")) $("b-shading-flat").classList.toggle("on", currentShading === "flat");
+    if ($("b-shading-smooth")) $("b-shading-smooth").classList.toggle("on", currentShading === "smooth");
+  }
+  const mShadow = str.match(/:shadow_map\s+(#[tf])/);
+  if (mShadow) {
+    currentShadows = (mShadow[1] === "#t");
+    if ($("b-shadows")) {
+      $("b-shadows").classList.toggle("on", currentShadows);
+      $("b-shadows").textContent = currentShadows ? "☀️ Тени: Вкл" : "☀️ Тени: Выкл";
+    }
+  }
+}
 
 $("b-filter-nearest").onclick = () => {
   currentFilter = "nearest";
@@ -976,6 +1017,30 @@ $("b-mipmaps").onclick = () => {
   $("b-mipmaps").textContent = currentMipmaps ? "Mipmaps: Вкл" : "Mipmaps: Выкл";
   api("/api/eval", {code: currentMipmaps ? "(gpu3d-mipmaps #t)" : "(gpu3d-mipmaps #f)"});
   toast(currentMipmaps ? "Mipmaps: Вкл (антиалиасинг на горизонте)" : "Mipmaps: Выкл");
+};
+
+$("b-shading-flat").onclick = () => {
+  currentShading = "flat";
+  $("b-shading-flat").classList.add("on");
+  $("b-shading-smooth").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-shading 'flat)"});
+  toast("Затенение: Flat (ретро-грани)");
+};
+
+$("b-shading-smooth").onclick = () => {
+  currentShading = "smooth";
+  $("b-shading-smooth").classList.add("on");
+  $("b-shading-flat").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-shading 'smooth)"});
+  toast("Затенение: Smooth (сглаженный Блинн-Фонг)");
+};
+
+$("b-shadows").onclick = () => {
+  currentShadows = !currentShadows;
+  $("b-shadows").classList.toggle("on", currentShadows);
+  $("b-shadows").textContent = currentShadows ? "☀️ Тени: Вкл" : "☀️ Тени: Выкл";
+  api("/api/eval", {code: currentShadows ? "(gpu3d-shadow-enable #t)" : "(gpu3d-shadow-enable #f)"});
+  toast(currentShadows ? "Тени: Вкл (динамическая карта теней)" : "Тени: Выкл");
 };
 
 /* ───────────────────────── фокус и управление клавишами ───────────────────────── */
@@ -1455,6 +1520,9 @@ async function poll() {
       if (l[0] > lastLogSeq) { lastLogSeq = l[0]; logLine(l[1], "sys"); }
     }
     for (const r of st.results || []) {
+      if (r.result && r.result.includes(":backend")) {
+        applyGpu3dState(r.result);
+      }
       logLine("#" + r.id + " → " + r.result, r.result.startsWith("ОШИБКА") ? "bad" : "res");
       if (r.id > lastResult) lastResult = r.id;
       if (pendingToasts[r.id]) {
@@ -1502,6 +1570,7 @@ applyViewportScale();
 streamFrame();
 setInterval(poll, 250);
 poll();
+api("/api/eval", {code: "(gpu3d-state)"});
 logLine("редактор подключён. Всё живое: правь код — мир меняется без перезапуска.", "sys");
 </script>
 </body>

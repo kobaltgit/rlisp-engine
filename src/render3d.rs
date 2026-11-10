@@ -2536,6 +2536,21 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Nil)
     });
 
+    // управление отображением теней: (gpu3d-shadow-enable [bool]) -> bool
+    let hc = hal.clone();
+    def(env, "gpu3d-shadow-enable", move |args| {
+        let mut h = hc.borrow_mut();
+        if !args.is_empty() {
+            h.r3.shadow_enabled = match &args[0] {
+                Value::Bool(b) => *b,
+                Value::Int(i) => *i != 0,
+                Value::Nil => false,
+                _ => true,
+            };
+        }
+        Ok(Value::Bool(h.r3.shadow_enabled))
+    });
+
     // проверка попадания точки в тень (для тестирования или геймплея на Lisp)
     let hc = hal.clone();
     def(env, "gpu3d-shadow-sample", move |args| {
