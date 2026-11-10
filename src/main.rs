@@ -1276,7 +1276,9 @@ fn run_engine(args: &Args) -> Result<(), String> {
         };
 
         let need_readback = if let Some(b) = &bridge {
-            frames <= 1 || b.frame_requested.swap(false, std::sync::atomic::Ordering::Relaxed)
+            frames <= 1
+                || b.frame_requested
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
         } else {
             false
         };

@@ -39,7 +39,7 @@ impl MipLevel {
 pub struct Tex {
     pub w: usize,
     pub h: usize,
-    pub px: Vec<u8>, // rgba (LOD 0)
+    pub px: Vec<u8>,         // rgba (LOD 0)
     pub mips: Vec<MipLevel>, // mips[0] = оригинал, mips[1] = 1/2, ...
 }
 

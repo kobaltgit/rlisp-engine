@@ -531,7 +531,7 @@ impl WgpuRenderer {
                     module: &module,
                     entry_point: "vs_main",
                     compilation_options: Default::default(),
-                    buffers: &[vlayout.clone()],
+                    buffers: std::slice::from_ref(&vlayout),
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
@@ -802,7 +802,9 @@ impl GpuBackend for WgpuRenderer {
         self.readback_pad = Self::pad_rows(w);
         self.readback = self.make_readback(w, h);
         self.depth_target = self.device.create_texture(&Self::depth_desc(w, h));
-        self.depth_view = self.depth_target.create_view(&wgpu::TextureViewDescriptor::default());
+        self.depth_view = self
+            .depth_target
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.enc = None;
         self.vused = 0;
         self.pending = 0;
@@ -1482,7 +1484,6 @@ impl GpuBackend for WgpuRenderer {
         self.pipeline_3d.clear_mesh_cache();
     }
 }
-
 
 // ————————————————————————————————————————————————————————————————————————
 // Тесты: книга ресурсов и композит — без устройства (wgpu-путь проверяется

@@ -453,13 +453,7 @@ pub fn shadow_sample(r3: &R3, wx: f32, wy: f32, wz: f32, bias: f32) -> f32 {
     top * (1.0 - fy) + bottom * fy
 }
 
-pub fn shadow_begin(
-    r3: &mut R3,
-    matrix: [f32; 16],
-    w: usize,
-    h: usize,
-    bias: Option<f32>,
-) {
+pub fn shadow_begin(r3: &mut R3, matrix: [f32; 16], w: usize, h: usize, bias: Option<f32>) {
     r3.light_matrix = matrix;
     r3.shadow_w = w;
     r3.shadow_h = h;
@@ -519,20 +513,44 @@ pub(crate) fn compute_light_matrix(
     let u = cross3(&r, &f);
 
     let view = [
-        r[0], r[1], r[2], -dot3(&r, &eye),
-        u[0], u[1], u[2], -dot3(&u, &eye),
-        -f[0], -f[1], -f[2], dot3(&f, &eye),
-        0.0, 0.0, 0.0, 1.0,
+        r[0],
+        r[1],
+        r[2],
+        -dot3(&r, &eye),
+        u[0],
+        u[1],
+        u[2],
+        -dot3(&u, &eye),
+        -f[0],
+        -f[1],
+        -f[2],
+        dot3(&f, &eye),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ];
 
     let rl = 2.0 * size;
     let tb = 2.0 * size;
     let fn_dist = far - near;
     let proj = [
-        2.0 / rl, 0.0, 0.0, 0.0,
-        0.0, 2.0 / tb, 0.0, 0.0,
-        0.0, 0.0, -2.0 / fn_dist, -(far + near) / fn_dist,
-        0.0, 0.0, 0.0, 1.0,
+        2.0 / rl,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0 / tb,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -2.0 / fn_dist,
+        -(far + near) / fn_dist,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
     ];
 
     let mut out = [0.0f32; 16];
@@ -549,6 +567,7 @@ pub(crate) fn compute_light_matrix(
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_point_lights(
     lights: &[PointLight],
     view: &[f32; 3],
@@ -613,11 +632,7 @@ pub(crate) fn compute_point_lights(
     (diff, spec_acc)
 }
 
-fn raster_shadow_tris(
-    r3: &mut R3,
-    clip: &[f32],
-    idx: &[f32],
-) -> Result<u64, String> {
+fn raster_shadow_tris(r3: &mut R3, clip: &[f32], idx: &[f32]) -> Result<u64, String> {
     let sw = r3.shadow_w;
     let sh = r3.shadow_h;
     if sw == 0 || sh == 0 || r3.shadow_map.len() != sw * sh {
@@ -880,10 +895,30 @@ pub(crate) fn sample_bilinear_raw(px: &[u8], w: usize, h: usize, u: f32, v: f32)
     let idx11 = (y1 * w + x1) * 4;
 
     [
-        ((px[idx00] as u32 * w00 + px[idx10] as u32 * w10 + px[idx01] as u32 * w01 + px[idx11] as u32 * w11 + 32768) >> 16) as u8,
-        ((px[idx00 + 1] as u32 * w00 + px[idx10 + 1] as u32 * w10 + px[idx01 + 1] as u32 * w01 + px[idx11 + 1] as u32 * w11 + 32768) >> 16) as u8,
-        ((px[idx00 + 2] as u32 * w00 + px[idx10 + 2] as u32 * w10 + px[idx01 + 2] as u32 * w01 + px[idx11 + 2] as u32 * w11 + 32768) >> 16) as u8,
-        ((px[idx00 + 3] as u32 * w00 + px[idx10 + 3] as u32 * w10 + px[idx01 + 3] as u32 * w01 + px[idx11 + 3] as u32 * w11 + 32768) >> 16) as u8,
+        ((px[idx00] as u32 * w00
+            + px[idx10] as u32 * w10
+            + px[idx01] as u32 * w01
+            + px[idx11] as u32 * w11
+            + 32768)
+            >> 16) as u8,
+        ((px[idx00 + 1] as u32 * w00
+            + px[idx10 + 1] as u32 * w10
+            + px[idx01 + 1] as u32 * w01
+            + px[idx11 + 1] as u32 * w11
+            + 32768)
+            >> 16) as u8,
+        ((px[idx00 + 2] as u32 * w00
+            + px[idx10 + 2] as u32 * w10
+            + px[idx01 + 2] as u32 * w01
+            + px[idx11 + 2] as u32 * w11
+            + 32768)
+            >> 16) as u8,
+        ((px[idx00 + 3] as u32 * w00
+            + px[idx10 + 3] as u32 * w10
+            + px[idx01 + 3] as u32 * w01
+            + px[idx11 + 3] as u32 * w11
+            + 32768)
+            >> 16) as u8,
     ]
 }
 
@@ -918,6 +953,7 @@ pub(crate) struct TexGradients {
 }
 
 impl TexGradients {
+    #[allow(clippy::too_many_arguments)]
     pub fn compute(
         p0: &Vtx,
         p1: &Vtx,
@@ -987,6 +1023,7 @@ impl TexGradients {
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_tex(
     tex: &TexRef,
     filter: TexFilter,
@@ -1304,7 +1341,11 @@ fn mesh_draw(
             h,
             &clip,
             &world,
-            if nrm.is_some() { Some(&world_nrm) } else { None },
+            if nrm.is_some() {
+                Some(&world_nrm)
+            } else {
+                None
+            },
             uv,
             vca,
             idx,
@@ -1532,7 +1573,11 @@ fn batch_draw_impl(
         h,
         &clip,
         &world,
-        if nrm.is_some() { Some(&world_nrm) } else { None },
+        if nrm.is_some() {
+            Some(&world_nrm)
+        } else {
+            None
+        },
         if uv.is_some() { Some(&uvq) } else { None },
         None,
         &idx_all,
@@ -1673,7 +1718,14 @@ fn blend_tri(
                         let nz = ((w0 * p0.nzq + w1 * p1.nzq + w2 * p2.nzq) / sum) / iwp;
                         let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
                         if nlen < 1e-9 {
-                            (nnrm, if nl_ok { dot3(&nnrm, &light).abs() } else { 0.0 })
+                            (
+                                nnrm,
+                                if nl_ok {
+                                    dot3(&nnrm, &light).abs()
+                                } else {
+                                    0.0
+                                },
+                            )
                         } else {
                             let inv_nlen = 1.0 / nlen;
                             let norm = [nx * inv_nlen, ny * inv_nlen, nz * inv_nlen];
@@ -1681,9 +1733,17 @@ fn blend_tri(
                             (norm, ndl)
                         }
                     } else {
-                        (nnrm, if nl_ok { dot3(&nnrm, &light).abs() } else { 0.0 })
+                        (
+                            nnrm,
+                            if nl_ok {
+                                dot3(&nnrm, &light).abs()
+                            } else {
+                                0.0
+                            },
+                        )
                     };
-                    let need_world_pos = spec_on || r3.shadow_enabled || !r3.point_lights.is_empty();
+                    let need_world_pos =
+                        spec_on || r3.shadow_enabled || !r3.point_lights.is_empty();
                     let (wx, wy, wz) = if need_world_pos {
                         (
                             ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp,
@@ -2197,7 +2257,8 @@ fn raster_tris(
                         (nnrm, ndl)
                     };
 
-                    let need_world_pos = spec_on || r3.shadow_enabled || !r3.point_lights.is_empty();
+                    let need_world_pos =
+                        spec_on || r3.shadow_enabled || !r3.point_lights.is_empty();
                     let (wx, wy, wz) = if need_world_pos {
                         (wxq * f, wyq * f, wzq * f)
                     } else {
@@ -2496,7 +2557,11 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         t.insert("blend".into(), Value::Float(r3.blend as f64));
         t.insert(
             "shading".into(),
-            Value::Sym(if r3.smooth { "smooth".into() } else { "flat".into() }),
+            Value::Sym(if r3.smooth {
+                "smooth".into()
+            } else {
+                "flat".into()
+            }),
         );
         t.insert(
             "filter".into(),
@@ -2517,7 +2582,10 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         );
         t.insert("shadow-enabled".into(), Value::Bool(r3.shadow_enabled));
         t.insert("shadow-bias".into(), Value::Float(r3.shadow_bias as f64));
-        t.insert("point-lights".into(), Value::Int(r3.point_lights.len() as i64));
+        t.insert(
+            "point-lights".into(),
+            Value::Int(r3.point_lights.len() as i64),
+        );
         Ok(Value::Table(Rc::new(RefCell::new(t))))
     });
 
@@ -2605,8 +2673,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         need(args, 1)?;
         let h = hc.borrow();
         let (wx, wy, wz, bias) = if args.len() == 1
-            || (args.len() == 2
-                && matches!(&args[0], Value::List(_) | Value::F32Vec(_)))
+            || (args.len() == 2 && matches!(&args[0], Value::List(_) | Value::F32Vec(_)))
         {
             let v = to_f32s(&args[0])?;
             if v.len() < 3 {
@@ -2798,6 +2865,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         }
         let n = pos.len() / 3;
         let mut nrm = vec![0.0f32; n * 3];
+        #[allow(clippy::chunks_exact_to_as_chunks)]
         for tri in idx.chunks_exact(3) {
             let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
             if i0 < n && i1 < n && i2 < n {
@@ -3012,7 +3080,16 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         };
         check_tex_uv(Some(&uv), pos.len() / 3)?;
         let mut h = hc.borrow_mut();
-        let n = batch_draw(&mut h, &pos, Some(&uv), nrm.as_deref(), &idx, &insts, &mvp, texid)?;
+        let n = batch_draw(
+            &mut h,
+            &pos,
+            Some(&uv),
+            nrm.as_deref(),
+            &idx,
+            &insts,
+            &mvp,
+            texid,
+        )?;
         Ok(Value::Int(n as i64))
     });
 
@@ -3619,12 +3696,14 @@ mod tests {
         // правые вершины (1, 2) смотрят вперед (0, 0, 1).
         // Источник света прямо спереди: light = [0, 0, 1].
         // ambient = 0.2, diffuse = 0.8.
-        let pos = [-1.0f32, -1.0, 0.5, 1.0, -1.0, 0.5, 1.0, 1.0, 0.5, -1.0, 1.0, 0.5];
+        let pos = [
+            -1.0f32, -1.0, 0.5, 1.0, -1.0, 0.5, 1.0, 1.0, 0.5, -1.0, 1.0, 0.5,
+        ];
         let nrm = [
             -1.0f32, 0.0, 0.0, // v0
-             0.0, 0.0, 1.0,    // v1
-             0.0, 0.0, 1.0,    // v2
-            -1.0, 0.0, 0.0,    // v3
+            0.0, 0.0, 1.0, // v1
+            0.0, 0.0, 1.0, // v2
+            -1.0, 0.0, 0.0, // v3
         ];
         let idx = [0.0f32, 1.0, 2.0, 0.0, 2.0, 3.0];
         let mm = ед_матрицы();
@@ -3688,9 +3767,22 @@ mod tests {
         .unwrap();
         let left_smooth = пиксель(&hal_smooth, 0, 4);
         let right_smooth = пиксель(&hal_smooth, 7, 4);
-        assert!(left_smooth[0] < right_smooth[0], "левый край ({}) должен быть темнее правого ({})", left_smooth[0], right_smooth[0]);
-        assert!(left_smooth[0] < 120, "левый край должен иметь низкую освещенность: {}", left_smooth[0]);
-        assert_eq!(right_smooth[0], 255, "правый край освещен полностью: {}", right_smooth[0]);
+        assert!(
+            left_smooth[0] < right_smooth[0],
+            "левый край ({}) должен быть темнее правого ({})",
+            left_smooth[0],
+            right_smooth[0]
+        );
+        assert!(
+            left_smooth[0] < 120,
+            "левый край должен иметь низкую освещенность: {}",
+            left_smooth[0]
+        );
+        assert_eq!(
+            right_smooth[0], 255,
+            "правый край освещен полностью: {}",
+            right_smooth[0]
+        );
     }
 
     #[test]
@@ -3702,16 +3794,20 @@ mod tests {
             for x in 0..4 {
                 let idx = (y * 4 + x) * 4;
                 let color = match (x < 2, y < 2) {
-                    (true, true) => [255, 0, 0, 255],     // Верх-лево: Red
-                    (false, true) => [0, 255, 0, 255],    // Верх-право: Green
-                    (true, false) => [0, 0, 255, 255],    // Низ-лево: Blue
+                    (true, true) => [255, 0, 0, 255],       // Верх-лево: Red
+                    (false, true) => [0, 255, 0, 255],      // Верх-право: Green
+                    (true, false) => [0, 0, 255, 255],      // Низ-лево: Blue
                     (false, false) => [255, 255, 255, 255], // Низ-право: White
                 };
                 px4x4[idx..idx + 4].copy_from_slice(&color);
             }
         }
         let tex = Tex::new(4, 4, px4x4);
-        assert_eq!(tex.mips.len(), 3, "4x4 должна дать 3 уровня LOD (0: 4x4, 1: 2x2, 2: 1x1)");
+        assert_eq!(
+            tex.mips.len(),
+            3,
+            "4x4 должна дать 3 уровня LOD (0: 4x4, 1: 2x2, 2: 1x1)"
+        );
         assert_eq!((tex.mips[0].w, tex.mips[0].h), (4, 4));
         assert_eq!((tex.mips[1].w, tex.mips[1].h), (2, 2));
         assert_eq!((tex.mips[2].w, tex.mips[2].h), (1, 1));
@@ -3728,7 +3824,11 @@ mod tests {
 
         // LOD 2: усреднение всех 4 цветов: (255+0+0+255)/4 = 128
         let lod2 = &tex.mips[2].px[0..4];
-        assert_eq!(lod2, [128, 128, 128, 255], "LOD 2 1x1: среднее всех 4 квадрантов");
+        assert_eq!(
+            lod2,
+            [128, 128, 128, 255],
+            "LOD 2 1x1: среднее всех 4 квадрантов"
+        );
 
         // Непрямоугольная текстура 8x2: 8x2 -> 4x1 -> 2x1 -> 1x1
         let tex_rec = Tex::new(8, 2, vec![100u8; 8 * 2 * 4]);
@@ -3740,8 +3840,7 @@ mod tests {
         // 2. Билинейная интерполяция
         // 2x2 текстура: левый столбец Black, правый столбец White
         let bw_px = vec![
-            0, 0, 0, 255,     255, 255, 255, 255,
-            0, 0, 0, 255,     255, 255, 255, 255,
+            0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
         ];
         let bw_mip = crate::hal::MipLevel {
             w: 2,
@@ -3770,20 +3869,26 @@ mod tests {
         // 3. Интеграционный тест растра: ступенчатый Nearest vs гладкий Bilinear
         let uv = [0.0f32, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
         let mut hal_near = Hal::new(OutputMode::Silent, 8, 8);
-        hal_near.tex.push(Tex::new(2, 2, vec![
-            0, 0, 0, 255,     255, 255, 255, 255,
-            0, 0, 0, 255,     255, 255, 255, 255,
-        ]));
+        hal_near.tex.push(Tex::new(
+            2,
+            2,
+            vec![
+                0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
+            ],
+        ));
         hal_near.fill_all(0, 0, 0);
         свет_плоский(&mut hal_near);
         hal_near.r3.tex_filter = TexFilter::Nearest;
         рисуем_квадрат(&mut hal_near, 1, 0.5, &uv);
 
         let mut hal_bili = Hal::new(OutputMode::Silent, 8, 8);
-        hal_bili.tex.push(Tex::new(2, 2, vec![
-            0, 0, 0, 255,     255, 255, 255, 255,
-            0, 0, 0, 255,     255, 255, 255, 255,
-        ]));
+        hal_bili.tex.push(Tex::new(
+            2,
+            2,
+            vec![
+                0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255,
+            ],
+        ));
         hal_bili.fill_all(0, 0, 0);
         свет_плоский(&mut hal_bili);
         hal_bili.r3.tex_filter = TexFilter::Bilinear;
@@ -3801,9 +3906,24 @@ mod tests {
         let b4 = пиксель(&hal_bili, 4, 4)[0];
         let b7 = пиксель(&hal_bili, 7, 4)[0];
         assert!(b0 <= 20, "левый край bilinear: {}", b0);
-        assert!(b3 > 50 && b3 < 150, "пиксель 3 в bilinear имеет промежуточный цвет: {}", b3);
-        assert!(b4 > 120 && b4 < 200, "пиксель 4 в bilinear имеет промежуточный цвет: {}", b4);
-        assert!(b0 < b3 && b3 < b4 && b4 < b7, "монотонный рост градиента: {} < {} < {} < {}", b0, b3, b4, b7);
+        assert!(
+            b3 > 50 && b3 < 150,
+            "пиксель 3 в bilinear имеет промежуточный цвет: {}",
+            b3
+        );
+        assert!(
+            b4 > 120 && b4 < 200,
+            "пиксель 4 в bilinear имеет промежуточный цвет: {}",
+            b4
+        );
+        assert!(
+            b0 < b3 && b3 < b4 && b4 < b7,
+            "монотонный рост градиента: {} < {} < {} < {}",
+            b0,
+            b3,
+            b4,
+            b7
+        );
         assert!(b7 >= 235, "правый край bilinear: {}", b7);
     }
 
@@ -3820,15 +3940,57 @@ mod tests {
         let nrm = [0.0, 1.0, 0.0];
 
         // Точка прямо под источником: (0, 0, 0)
-        let (diff0, _) = compute_point_lights(&[pl.clone()], &view, 0.0, 0.0, 0.0, &nrm, false, false, 32.0, 0.0);
-        assert!(diff0[0] > 0.5, "свет прямо под источником ярок: {}", diff0[0]);
+        let (diff0, _) = compute_point_lights(
+            std::slice::from_ref(&pl),
+            &view,
+            0.0,
+            0.0,
+            0.0,
+            &nrm,
+            false,
+            false,
+            32.0,
+            0.0,
+        );
+        assert!(
+            diff0[0] > 0.5,
+            "свет прямо под источником ярок: {}",
+            diff0[0]
+        );
 
         // Точка на расстоянии 3: свет заметно затухает
-        let (diff3, _) = compute_point_lights(&[pl.clone()], &view, 3.0, 0.0, 0.0, &nrm, false, false, 32.0, 0.0);
-        assert!(diff3[0] > 0.0 && diff3[0] < diff0[0], "затухание с расстоянием: {} < {}", diff3[0], diff0[0]);
+        let (diff3, _) = compute_point_lights(
+            std::slice::from_ref(&pl),
+            &view,
+            3.0,
+            0.0,
+            0.0,
+            &nrm,
+            false,
+            false,
+            32.0,
+            0.0,
+        );
+        assert!(
+            diff3[0] > 0.0 && diff3[0] < diff0[0],
+            "затухание с расстоянием: {} < {}",
+            diff3[0],
+            diff0[0]
+        );
 
         // Точка на расстоянии 6 (> radius 5.0): свет строго равен 0
-        let (diff6, _) = compute_point_lights(&[pl.clone()], &view, 6.0, 0.0, 0.0, &nrm, false, false, 32.0, 0.0);
+        let (diff6, _) = compute_point_lights(
+            std::slice::from_ref(&pl),
+            &view,
+            6.0,
+            0.0,
+            0.0,
+            &nrm,
+            false,
+            false,
+            32.0,
+            0.0,
+        );
         assert_eq!(diff6, [0.0, 0.0, 0.0], "вне радиуса свет нулевой");
 
         // 2. Тест теневой карты (Shadow Mapping)
@@ -3843,22 +4005,24 @@ mod tests {
 
         // Рендерим кастер тени: квадрат размером 2x2 на высоте y = 5.0 над началом координат
         let caster_pos = [
-            -1.0f32, 5.0, -1.0,
-             1.0,    5.0, -1.0,
-             1.0,    5.0,  1.0,
-            -1.0,    5.0,  1.0,
+            -1.0f32, 5.0, -1.0, 1.0, 5.0, -1.0, 1.0, 5.0, 1.0, -1.0, 5.0, 1.0,
         ];
         let caster_idx = [0.0f32, 1.0, 2.0, 0.0, 2.0, 3.0];
         let mut world = Vec::new();
         let mut world_nrm = Vec::new();
         let mut clip = Vec::new();
         let identity = [
-            1.0f32, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
-        transform_all(&caster_pos, None, &identity, &light_mat, &mut world, &mut world_nrm, &mut clip);
+        transform_all(
+            &caster_pos,
+            None,
+            &identity,
+            &light_mat,
+            &mut world,
+            &mut world_nrm,
+            &mut clip,
+        );
         let drawn = raster_shadow_tris(&mut r3, &clip, &caster_idx).unwrap();
         assert!(drawn > 0, "треугольники кастера записаны в теневую карту");
 
@@ -3877,7 +4041,11 @@ mod tests {
 
         // Точка на границе кастера (~1.0, 0, 0) с PCF 2x2 даёт мягкий переход
         let s_edge = shadow_sample(&r3, 1.0, 0.0, 0.0, 0.005);
-        assert!(s_edge >= 0.0 && s_edge <= 1.0, "мягкая граница тени PCF: {}", s_edge);
+        assert!(
+            (0.0..=1.0).contains(&s_edge),
+            "мягкая граница тени PCF: {}",
+            s_edge
+        );
     }
 
     // ——— этап 9.2: инкрементальный сканлайн + LUT тумана ———

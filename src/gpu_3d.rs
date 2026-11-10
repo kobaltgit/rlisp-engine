@@ -691,13 +691,11 @@ impl Pipeline3D {
         insts: &[f32],
     ) -> u64 {
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                insts.as_ptr() as *const u8,
-                std::mem::size_of_val(insts),
-            )
+            std::slice::from_raw_parts(insts.as_ptr() as *const u8, std::mem::size_of_val(insts))
         };
         if self.inst_buf_used + bytes.len() > self.inst_buf_cap {
-            self.inst_buf_cap = (self.inst_buf_cap * 2).max(self.inst_buf_used + bytes.len() + 1024);
+            self.inst_buf_cap =
+                (self.inst_buf_cap * 2).max(self.inst_buf_used + bytes.len() + 1024);
             self.inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rlisp-3d-inst-grow"),
                 size: self.inst_buf_cap as u64,
@@ -757,7 +755,12 @@ impl Pipeline3D {
                     (0.0, 0.0)
                 };
                 let col = if let Some(carr) = rgba {
-                    [carr[i * 4], carr[i * 4 + 1], carr[i * 4 + 2], carr[i * 4 + 3]]
+                    [
+                        carr[i * 4],
+                        carr[i * 4 + 1],
+                        carr[i * 4 + 2],
+                        carr[i * 4 + 3],
+                    ]
                 } else {
                     [tint.0, tint.1, tint.2, 1.0]
                 };
@@ -806,7 +809,12 @@ impl Pipeline3D {
         }
 
         let entry = self.mesh_cache.get(&key).unwrap();
-        (entry.vbuf.clone(), entry.ibuf.clone(), entry.v_bytes_len, entry.idx_count)
+        (
+            entry.vbuf.clone(),
+            entry.ibuf.clone(),
+            entry.v_bytes_len,
+            entry.idx_count,
+        )
     }
 
     pub fn clear_mesh_cache(&mut self) {
