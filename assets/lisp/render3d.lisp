@@ -43,6 +43,16 @@
         0 0 (/ (+ far near) (- near far)) (/ (* 2 far near) (- near far))
         0 0 -1 0)))
 
+;; ортографическая проекция: для теней (источник света) и изометрии
+(define (mat-ortho left right bottom top near far)
+  (let ((rl (- right left))
+        (tb (- top bottom))
+        (fn (- far near)))
+    (m4 (/ 2.0 rl) 0 0 (- (/ (+ right left) rl))
+        0 (/ 2.0 tb) 0 (- (/ (+ top bottom) tb))
+        0 0 (/ -2.0 fn) (- (/ (+ far near) fn))
+        0 0 0 1)))
+
 ;; ——— векторная математика v3 (не горячая: раз в кадр) ———
 (define (v3-sub a b) (list (- (car a) (car b)) (- (cadr a) (cadr b)) (- (caddr a) (caddr b))))
 (define (v3-dot a b) (+ (* (car a) (car b)) (* (cadr a) (cadr b)) (* (caddr a) (caddr b))))
@@ -65,6 +75,20 @@
         (- (car f)) (- (cadr f)) (- (caddr f)) (v3-dot f eye)
         0 0 0 1)))
 
+;; матрица источника света (солнца): орто-камера, направленная на цель
+(define (light-camera-matrix light-dir target size near far)
+  (let* ((ld (v3-norm light-dir))
+         (dist (* 0.5 (+ near far)))
+         (eye (list (+ (car target) (* (car ld) dist))
+                    (+ (cadr target) (* (cadr ld) dist))
+                    (+ (caddr target) (* (cadr ld) dist))))
+         (up (if (and (< (abs (car ld)) 0.1) (< (abs (caddr ld)) 0.1))
+                 (list 0 0 1)
+                 (list 0 1 0)))
+         (view (mat-lookat eye target up))
+         (proj (mat-ortho (- size) size (- size) size near far)))
+    (mat4-mul proj view)))
+
 ;; MVP одной матрицей: perspective · lookat
 (define (camera-mvp eye target fov)
   (let* ((wh (window-size))
@@ -72,6 +96,22 @@
          (view (mat-lookat eye target (list 0 1 0)))
          (proj (mat-perspective fov aspect 0.5 400.0)))
     (mat4-mul proj view)))
+
+;; макрос прохода теней:
+;; (with-shadow-map light-mat body ...)
+(defmacro with-shadow-map (light-mat . body)
+  `(begin
+     (gpu3d-shadow-begin ,light-mat 512 512)
+     ,@body
+     (gpu3d-shadow-end)))
+
+;; хелперы точечных источников света (Point Lights):
+(define (add-point-light x y z r g b radius . opt)
+  (let ((att (if (null? opt) 1.0 (car opt))))
+    (gpu3d-add-light 'point x y z r g b radius att)))
+
+(define (clear-point-lights)
+  (gpu3d-clear-lights))
 
 ;; ——— меши: (позиции-f32 индексы-f32 [нормали-f32]) ———
 (define (mesh-make pos idx . opt)

@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added (Освещение и тени — Shadow Mapping & Point Lights)
+- **Точечные источники света (Point Lights)**: примитивы `(gpu3d-add-light 'point x y z r g b radius [attenuation])` и `(gpu3d-clear-lights)`; квадратичное физическое затухание, расчет диффузного вклада и зеркального блика Blinn-Phong для каждого источника.
+- **Карты теней (Shadow Mapping)**: двухпроходный рендеринг через `(with-shadow-map light-mat ...)`, `gpu3d-shadow-begin` и `gpu3d-shadow-end`; легковесный depth-only проход кастеров тени в 512×512 карту; семплирование с мягкими краями через **PCF 2×2** (Percentage Closer Filtering) и адаптивное смещение глубины (bias).
+- **Lisp 3D DSL**: ортографическая проекция `(mat-ortho left right bottom top near far)`, вычисление матрицы солнца `(light-camera-matrix light-dir target size near far)`, хелперы `(add-point-light ...)` и `(clear-point-lights)`.
+- **Интеграция в ORBITAL (`game3d.lisp`)**: летящие пули освещают окружающую арену в реальном времени; пилоны и враги отбрасывают мягкие тени на неоновый пол.
+- **Документация и тесты**: модульный тест `render3d::tests::shadow_and_point_lights` (55/55 тестов воркспейса проходят); техническое описание в `docs/lighting_and_shadows.md`.
+
 ### Added (этап 9.1 «Тесселяция»)
 - Ландшафт 61×61 вершин (шаг 1.07), вода 25×25; стволы пальм — гладкие
   цилиндры (8×9 колец, изгиб, сужение) одним статичным мешем; камни —

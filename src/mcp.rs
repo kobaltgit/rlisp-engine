@@ -152,6 +152,14 @@ fn tool_status(state: &McpState) -> Json {
         ("drawcalls".into(), Json::int(hal.r3.drawn as i64)),
         ("culled".into(), Json::int(hal.r3.culled as i64)),
         ("textures".into(), Json::int(hal.tex.len() as i64)),
+        (
+            "tex_filter".into(),
+            Json::str(match hal.r3.tex_filter {
+                crate::render3d::TexFilter::Nearest => "nearest",
+                crate::render3d::TexFilter::Bilinear => "bilinear",
+            }),
+        ),
+        ("tex_mipmaps".into(), Json::Bool(hal.r3.tex_mipmaps)),
     ];
     drop(hal);
     if fmt_get(&state.h.cell, "*enemies*") != "?" {

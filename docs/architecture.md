@@ -34,7 +34,7 @@
 | `src/simd.rs` | 2 | SAL: AVX-512/AVX2/SSE2/scalar + калибровка + mat4 |
 | `src/hal.rs` | 1 | фасад HAL: растровые команды, ввод, память, файлы, время, реестр текстур, **диспетчеризация бэкендов** |
 | `src/gpu.rs` | 1 | **бэкенды рендера (этап 1)**: `enum Backend` + трейт `GpuBackend`, менеджер ресурсов `GpuResources`, wgpu-рендерер (фича `wgpu`) |
-| `src/render3d.rs` | 1 | 3D fixed-function: T&L, near-clip (+UV), куллинг, z-буфер, батч-вершинник; **этап 7 — материалы: alpha-test, блик Blinn-Phong, тайлинг UV, туман** |
+| `src/render3d.rs` | 1 | 3D fixed-function: T&L, near-clip (+UV), куллинг, z-буфер, батч-вершинник; материалы (alpha-test, блик Blinn-Phong, тайлинг UV, туман, сглаженные нормали); билинейная фильтрация и Mipmapping ([docs/texture_filtering_and_mipmaps.md](file:///d:/Projects/active/rlisp-engine/docs/texture_filtering_and_mipmaps.md)); **динамические точечные источники света и карты теней PCF 2×2 ([docs/lighting_and_shadows_maintainer.md](file:///d:/Projects/active/rlisp-engine/docs/lighting_and_shadows_maintainer.md))** |
 | `src/png.rs` | 1 | PNG-кодек без зависимостей (писатель + полный inflate) |
 | `src/editor.rs` | 1 | HTTP-сервер редактора (std::net), мост кадр/сцена/команды; этап 6: камера/префабы в `/api/state`, `/api/save-scene` |
 | `src/mcp.rs`, `src/json.rs` | 1 | MCP (JSON-RPC 2.0, stdio, **reader/writer-потоки + mpsc**, этап 2), JSON |

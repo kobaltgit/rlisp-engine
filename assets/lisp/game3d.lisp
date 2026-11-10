@@ -353,6 +353,22 @@
          (mvp (camera-mvp (list (+ pxv (* 4 (sin (* t 0.25)))) 22 (+ pzv 27))
                           (list pxv 0 (- pzv 5))
                           1.0)))
+    ;; — этап 4: динамические точечные источники света от пуль —
+    (clear-point-lights)
+    (for-each
+     (lambda (b)
+       (add-point-light (table-get b 'x 0.0) 1.4 (table-get b 'z 0.0)
+                        1.0 0.85 0.3 14.0 1.2))
+     *bullets*)
+
+    ;; — этап 4: предварительный проход теней (пилоны и враги) —
+    (let* ((ldir (list 0.45 0.8 0.35))
+           (light-mat (light-camera-matrix ldir (list pxv 0 pzv) 55 1.0 140.0)))
+      (with-shadow-map light-mat
+        (draw-batch *mesh-pillar* *pillar-insts* light-mat)
+        (if (null? (pylon-insts)) #f (draw-batch *mesh-pillar* (pylon-insts) light-mat))
+        (draw-batch-tex *mesh-cube* *uv-cube* *tex-panel* (enemy-insts t) light-mat)))
+
     ;; пол — ТЕКСТУРА «неоновая схема» одним draw call (v0.3)
     (draw-mesh-tex *mesh-floor* *uv-floor* *tex-floor*
                    (mat-identity) mvp (list 1.0 1.0 1.0))

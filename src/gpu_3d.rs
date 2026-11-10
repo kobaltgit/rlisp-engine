@@ -72,6 +72,8 @@ pub struct R3State {
     pub fog: [f32; 4],
     pub blend: f32,
     pub smooth: bool,
+    pub filter: crate::render3d::TexFilter,
+    pub mipmaps: bool,
 }
 
 #[repr(C)]
@@ -836,6 +838,8 @@ mod tests {
             fog: [0.7, 0.8, 0.9, 0.05],
             blend: 0.8,
             smooth: false,
+            filter: crate::render3d::TexFilter::Nearest,
+            mipmaps: false,
         };
         let raw = Uniforms3DRaw {
             model: [0.0; 16],

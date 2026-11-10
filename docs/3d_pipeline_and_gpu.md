@@ -173,3 +173,38 @@ $$nx\_w = \frac{N_x}{W}, \quad ny\_w = \frac{N_y}{W}, \quad nz\_w = \frac{N_z}{W
    cargo run --release --features wgpu -j 1 -- --capture test_frames --every 5 --frames 15 --wgpu --script assets/lisp/main_island.lisp
    ```
    Кадры `test_frames/frame_*.png` должны содержать полноценное цветное изображение без артефактов и пропадания геометрии.
+
+---
+
+## 8. Фильтрация текстур (Bilinear Filtering) и Mipmapping
+
+### 8.1. Проблема алиасинга и ретро-контроль
+Ранее софтверный растеризатор семплировал текстуры исключительно в режиме `Nearest` (`(u * w) as usize`), что приводило к двум дефектам:
+1. Крупные пиксели («лесенка») при близком рассмотрении поверхностей;
+2. Высокочастотное мерцание и рябь на горизонте при острых углах падения луча (например, на бесконечной плоскости пола или воде).
+
+Для сохранения ретро-эстетики (PS1/DOS vs N64/Voodoo) режим фильтрации полностью настраивается декларативно в материале (`:filter`, `:mipmaps`) или глобально через Lisp-примитивы:
+- `:filter 'nearest` — классический блочный ретро-стиль;
+- `:filter 'bilinear` — гладкая интерполяция 4 текселей;
+- `:mipmaps #t` / `#f` — включение/выключение пирамиды уровней детализации.
+
+### 8.2. Пирамида мипмапов (Box Filter 2x2)
+При создании текстуры (`Tex::new` / `texture-upload` / `texture-load`) автоматически строится цепочка уровней детализации вплоть до 1×1:
+* LOD 0: исходный размер $W \times H$;
+* LOD $k+1$: размер $\max(\lfloor W_k / 2 \rfloor, 1) \times \max(\lfloor H_k / 2 \rfloor, 1)$;
+* Каждый пиксель уровня вычисляется усреднением соответствующего блока 2×2 пикселя предыдущего уровня:
+  $$C_{dst} = \left\lfloor \frac{C_{00} + C_{10} + C_{01} + C_{11} + 2}{4} \right\rfloor$$
+
+### 8.3. Расчёт экранных градиентов и авто-выбор LOD
+Для каждого треугольника градиенты атрибутов screen-space постоянны по всей площади грани и вычисляются один раз перед проходом по пикселям через частные производные реберных функций:
+$$\frac{\partial W_0}{\partial x} = P_2.y - P_1.y, \quad \frac{\partial W_0}{\partial y} = P_1.x - P_2.x$$
+Внутри пиксельного цикла по правилу производной частного находятся $\frac{\partial u}{\partial x}, \frac{\partial v}{\partial x}, \frac{\partial u}{\partial y}, \frac{\partial v}{\partial y}$, после чего определяется размер следа текселя на пиксель экрана:
+$$\rho_{sq} = \max\left( \left(\frac{\partial u}{\partial x} \cdot W\right)^2 + \left(\frac{\partial v}{\partial x} \cdot H\right)^2, \quad \left(\frac{\partial u}{\partial y} \cdot W\right)^2 + \left(\frac{\partial v}{\partial y} \cdot H\right)^2 \right)$$
+$$\text{LOD} = \operatorname{clamp}\left( \operatorname{round}\left( 0.5 \cdot \log_2(\rho_{sq}) \right), 0, \text{mips.len}() - 1 \right)$$
+
+### 8.4. Целочисленный билинейный семплинг
+Семплирование 4 текселей выбранного уровня мипмапа выполняется в 16-битном целочисленном представлении с нулевыми накладными расходами на FPU/SIMD:
+* Непрерывные координаты: $u_{coord} = u \cdot (W - 1)$, $v_{coord} = v \cdot (H - 1)$;
+* Целые индексы и дробные доли $fx, fy \in [0, 256]$;
+* Взвешенное суммирование:
+  $$C = \frac{C_{00} \cdot (256 - fx)(256 - fy) + C_{10} \cdot fx(256 - fy) + C_{01} \cdot (256 - fx)fy + C_{11} \cdot fx \cdot fy + 32768}{65536}$$

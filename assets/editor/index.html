@@ -225,6 +225,13 @@
         <button id="b-scale-2x" class="vbtn" title="Увеличенный размер 640x480">2x</button>
         <button id="b-scale-fit" class="vbtn on" title="Заполнить всё доступное окно с сохранением 4:3">Fit</button>
       </div>
+      <div class="vbar-group" title="Режим фильтрации текстур: Nearest (ретро-пиксели) или Bilinear (сглаживание)">
+        <button id="b-filter-nearest" class="vbtn on">Nearest</button>
+        <button id="b-filter-bilinear" class="vbtn">Bilinear</button>
+      </div>
+      <div class="vbar-group">
+        <button id="b-mipmaps" class="vbtn" title="Пирамида мипмапов: устраняет мерцание текстур на горизонте">Mipmaps: Выкл</button>
+      </div>
       <span class="spacer"></span>
       <span id="vbar-focus-hint" class="vbar-hint">Кликните в экран для управления WASD / R</span>
       <button id="b-expand-view" class="vbtn" title="Развернуть/свернуть экран (F)">⛶ Развернуть</button>
@@ -942,6 +949,34 @@ $("b-scale-2x").onclick = () => applyViewportScale("2x");
 $("b-scale-fit").onclick = () => applyViewportScale("fit");
 $("b-expand-view").onclick = toggleExpandView;
 window.addEventListener("resize", () => applyViewportScale());
+
+/* ─── переключение фильтрации текстур и мипмапов ─── */
+let currentFilter = "nearest";
+let currentMipmaps = false;
+
+$("b-filter-nearest").onclick = () => {
+  currentFilter = "nearest";
+  $("b-filter-nearest").classList.add("on");
+  $("b-filter-bilinear").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-filter 'nearest)"});
+  toast("Текстуры: Nearest (пиксельный ретро-стиль)");
+};
+
+$("b-filter-bilinear").onclick = () => {
+  currentFilter = "bilinear";
+  $("b-filter-bilinear").classList.add("on");
+  $("b-filter-nearest").classList.remove("on");
+  api("/api/eval", {code: "(gpu3d-filter 'bilinear)"});
+  toast("Текстуры: Bilinear (сглаживание N64/3dfx)");
+};
+
+$("b-mipmaps").onclick = () => {
+  currentMipmaps = !currentMipmaps;
+  $("b-mipmaps").classList.toggle("on", currentMipmaps);
+  $("b-mipmaps").textContent = currentMipmaps ? "Mipmaps: Вкл" : "Mipmaps: Выкл";
+  api("/api/eval", {code: currentMipmaps ? "(gpu3d-mipmaps #t)" : "(gpu3d-mipmaps #f)"});
+  toast(currentMipmaps ? "Mipmaps: Вкл (антиалиасинг на горизонте)" : "Mipmaps: Выкл");
+};
 
 /* ───────────────────────── фокус и управление клавишами ───────────────────────── */
 let gameFocused = false;

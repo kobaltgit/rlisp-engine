@@ -620,11 +620,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
 
     // — программный растр (дефолт, ноль зависимостей) —
     let mut hal = Hal::new(OutputMode::Silent, 320, 240);
-    hal.tex.push(Tex {
-        w: 32,
-        h: 32,
-        px: tex.clone(),
-    });
+    hal.tex.push(Tex::new(32, 32, tex.clone()));
     hal.tex_register(1, 32, 32, &tex);
     let (t, _s, _r) = bench_frame_ops(&mut hal, &sprite, FRAMES_RUST);
     println!(
@@ -634,11 +630,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
     let halrc = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 320, 240)));
     {
         let mut h = halrc.borrow_mut();
-        h.tex.push(Tex {
-            w: 32,
-            h: 32,
-            px: tex.clone(),
-        });
+        h.tex.push(Tex::new(32, 32, tex.clone()));
         h.tex_register(1, 32, 32, &tex);
     }
     let lisp_soft = bench_lisp_scene(halrc, FRAMES_LISP)?;
@@ -667,11 +659,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
         240,
         gpu::Backend::Wgpu(gpu_backend),
     );
-    hal.tex.push(Tex {
-        w: 32,
-        h: 32,
-        px: tex.clone(),
-    });
+    hal.tex.push(Tex::new(32, 32, tex.clone()));
     hal.tex_register(1, 32, 32, &tex);
     let (t, s, r) = bench_frame_ops(&mut hal, &sprite, FRAMES_RUST);
     println!(
@@ -686,11 +674,7 @@ fn bench_2d(args: &Args) -> Result<(), String> {
     )));
     {
         let mut h = halrc.borrow_mut();
-        h.tex.push(Tex {
-            w: 32,
-            h: 32,
-            px: tex.clone(),
-        });
+        h.tex.push(Tex::new(32, 32, tex.clone()));
         h.tex_register(1, 32, 32, &tex);
     }
     let lisp_gpu = bench_lisp_scene(halrc, FRAMES_LISP)?;
@@ -840,11 +824,7 @@ fn bench_3d_shading() -> Result<(), String> {
     };
 
     let mut hal = Hal::new(OutputMode::Silent, 320, 240);
-    hal.tex.push(Tex {
-        w: 32,
-        h: 32,
-        px: px.clone(),
-    });
+    hal.tex.push(Tex::new(32, 32, px.clone()));
     hal.tex_register(1, 32, 32, &px);
     // свет и камера — как в игре: направление к источнику, view для блика
     hal.r3.light = [0.3, 0.7, 0.65];

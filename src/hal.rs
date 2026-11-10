@@ -20,12 +20,113 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+/// Уровень детализации текстуры (LOD пирамиды мипмапов).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MipLevel {
+    pub w: usize,
+    pub h: usize,
+    pub px: Vec<u8>,
+}
+
+impl MipLevel {
+    pub fn pixels(&self) -> &[u8] {
+        &self.px
+    }
+}
+
 /// Текстура «GPU» (v0.3): RGBA8, загружается из PNG или генерируется на Lisp.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Tex {
     pub w: usize,
     pub h: usize,
-    pub px: Vec<u8>, // rgba
+    pub px: Vec<u8>, // rgba (LOD 0)
+    pub mips: Vec<MipLevel>, // mips[0] = оригинал, mips[1] = 1/2, ...
+}
+
+#[allow(dead_code)]
+pub type Texture = Tex;
+
+impl Tex {
+    pub fn new(w: usize, h: usize, px: Vec<u8>) -> Self {
+        let mut t = Tex {
+            w,
+            h,
+            px,
+            mips: Vec::new(),
+        };
+        t.generate_mips();
+        t
+    }
+
+    pub fn empty() -> Self {
+        Tex {
+            w: 0,
+            h: 0,
+            px: Vec::new(),
+            mips: Vec::new(),
+        }
+    }
+
+    pub fn pixels(&self) -> &[u8] {
+        &self.px
+    }
+
+    /// Генерация пирамиды мипмапов с усреднением блоков 2x2 пикселя (Box Filter) до размера 1x1.
+    pub fn generate_mips(&mut self) {
+        self.mips.clear();
+        if self.w == 0 || self.h == 0 || self.px.len() < self.w * self.h * 4 {
+            return;
+        }
+        self.mips.push(MipLevel {
+            w: self.w,
+            h: self.h,
+            px: self.px.clone(),
+        });
+
+        let mut curr_w = self.w;
+        let mut curr_h = self.h;
+        let mut curr_px = self.px.clone();
+
+        while curr_w > 1 || curr_h > 1 {
+            let next_w = (curr_w / 2).max(1);
+            let next_h = (curr_h / 2).max(1);
+            let mut next_px = vec![0u8; next_w * next_h * 4];
+
+            for y in 0..next_h {
+                let y0 = (y * 2).min(curr_h - 1);
+                let y1 = (y * 2 + 1).min(curr_h - 1);
+                for x in 0..next_w {
+                    let x0 = (x * 2).min(curr_w - 1);
+                    let x1 = (x * 2 + 1).min(curr_w - 1);
+
+                    let dst_idx = (y * next_w + x) * 4;
+
+                    let idx00 = (y0 * curr_w + x0) * 4;
+                    let idx10 = (y0 * curr_w + x1) * 4;
+                    let idx01 = (y1 * curr_w + x0) * 4;
+                    let idx11 = (y1 * curr_w + x1) * 4;
+
+                    for c in 0..4 {
+                        let sum = curr_px[idx00 + c] as u32
+                            + curr_px[idx10 + c] as u32
+                            + curr_px[idx01 + c] as u32
+                            + curr_px[idx11 + c] as u32;
+                        next_px[dst_idx + c] = ((sum + 2) / 4) as u8;
+                    }
+                }
+            }
+
+            self.mips.push(MipLevel {
+                w: next_w,
+                h: next_h,
+                px: next_px.clone(),
+            });
+
+            curr_w = next_w;
+            curr_h = next_h;
+            curr_px = next_px;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -287,6 +388,11 @@ impl Hal {
     pub fn tex_register(&mut self, id: i64, w: usize, h: usize, px: &[u8]) {
         let _ = (w, h); // размеры нужны только wgpu-стороне (создание текстуры)
         self.res.register(id, px.len());
+        if let Some(t) = self.tex.get_mut((id - 1) as usize) {
+            if t.mips.is_empty() && t.w > 0 && t.h > 0 {
+                t.generate_mips();
+            }
+        }
         if let Backend::Wgpu(gpu) = &mut self.backend {
             gpu.tex_upload(id, w, h, px);
         }
@@ -296,11 +402,7 @@ impl Hal {
     pub fn tex_free(&mut self, id: i64) -> bool {
         let freed = self.res.free(id);
         if id >= 1 && id <= self.tex.len() as i64 {
-            self.tex[(id - 1) as usize] = Tex {
-                w: 0,
-                h: 0,
-                px: vec![],
-            };
+            self.tex[(id - 1) as usize] = Tex::empty();
         }
         if let Backend::Wgpu(gpu) = &mut self.backend {
             gpu.tex_free(id);
@@ -327,11 +429,7 @@ impl Hal {
         for (i, t) in self.tex.iter_mut().enumerate() {
             let id = (i + 1) as i64;
             if !keep.contains(&id) {
-                *t = Tex {
-                    w: 0,
-                    h: 0,
-                    px: vec![],
-                };
+                *t = Tex::empty();
             }
         }
         while self.tex.last().is_some_and(|t| t.w == 0) {
@@ -827,11 +925,7 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
             std::fs::read(&p).map_err(|e| format!("texture-load {}: {}", p.display(), e))?;
         let (px, w, hh) = png::decode_png(&bytes)?;
         let mut hal = h.borrow_mut();
-        hal.tex.push(Tex {
-            w,
-            h: hh,
-            px: px.clone(),
-        });
+        hal.tex.push(Tex::new(w, hh, px.clone()));
         let id = hal.tex.len() as i64;
         // менеджер ресурсов: хэндл в книгу + загрузка на активный бэкенд
         hal.tex_register(id, w, hh, &px);
@@ -880,11 +974,7 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
             ));
         }
         let mut hal = h.borrow_mut();
-        hal.tex.push(Tex {
-            w,
-            h: hh,
-            px: px.clone(),
-        });
+        hal.tex.push(Tex::new(w, hh, px.clone()));
         let id = hal.tex.len() as i64;
         hal.tex_register(id, w, hh, &px);
         Ok(Value::Int(id))
@@ -916,11 +1006,7 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         };
         let (px, w, hh) = png::decode_png(&bytes)?;
         let mut hal = h.borrow_mut();
-        hal.tex.push(Tex {
-            w,
-            h: hh,
-            px: px.clone(),
-        });
+        hal.tex.push(Tex::new(w, hh, px.clone()));
         let id = hal.tex.len() as i64;
         hal.tex_register(id, w, hh, &px);
         Ok(Value::Int(id))
@@ -938,6 +1024,17 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
             Value::Int(t.w as i64),
             Value::Int(t.h as i64),
         ]))
+    });
+    let h = hal.clone();
+    def(env, "texture-mips", move |args| {
+        need(args, 1)?;
+        let hal = h.borrow();
+        let id = int_val(&args[0])? as usize;
+        let t = hal
+            .tex
+            .get(id.wrapping_sub(1))
+            .ok_or("texture-mips: нет такой текстуры")?;
+        Ok(Value::Int(t.mips.len() as i64))
     });
     let h = hal.clone();
     def(env, "texture-pixels", move |args| {
@@ -1156,7 +1253,7 @@ mod tests {
     fn диспетчер_blit_tex_software_тинт_и_ошибка_освобождённой() {
         let mut hal = Hal::new(OutputMode::Silent, 16, 16);
         let px = vec![255u8; 4 * 4 * 4];
-        hal.tex.push(Tex { w: 4, h: 4, px });
+        hal.tex.push(Tex::new(4, 4, px));
         hal.tex_register(1, 4, 4, &[255u8; 64]);
         hal.blit_tex(1, 0, 0, 1.0, [0.5, 0.5, 0.5]).unwrap();
         assert_eq!(hal.fb[0], 127); // 255 * 0.5
@@ -1170,11 +1267,7 @@ mod tests {
     fn ресуры_цикл_текстур_и_счётчики() {
         let mut hal = Hal::new(OutputMode::Silent, 16, 16);
         let px = vec![0u8; 64];
-        hal.tex.push(Tex {
-            w: 4,
-            h: 4,
-            px: px.clone(),
-        });
+        hal.tex.push(Tex::new(4, 4, px.clone()));
         hal.tex_register(1, 4, 4, &px);
         assert_eq!(hal.res.stats.tex_created, 1);
         assert_eq!(hal.res.live(), 1);
@@ -1192,11 +1285,7 @@ mod tests {
             // как на каждом reload 3D-игры: пересоздаются 5 текстур
             for _ in 0..5 {
                 let id = (hal.tex.len() + 1) as i64;
-                hal.tex.push(Tex {
-                    w: 16,
-                    h: 16,
-                    px: px.clone(),
-                });
+                hal.tex.push(Tex::new(16, 16, px.clone()));
                 hal.tex_register(id, 16, 16, &px);
             }
             // persistent-мир держит только id=1
