@@ -17,9 +17,12 @@ mod json;
 mod mcp;
 #[cfg(test)]
 mod parse_diff;
+mod physics;
 mod png;
 mod render3d;
 mod simd;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 
 use hal::{Hal, OutputMode, Tex};
 use interp::{
@@ -194,6 +197,7 @@ pub fn register_all(env: Gc, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
     simd::register_simd(env);
     render3d::register_render3d(env, halrc);
     editor::register_editor(env);
+    physics::register(env, Rc::new(RefCell::new(Vec::new())));
 }
 
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {

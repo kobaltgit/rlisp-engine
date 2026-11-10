@@ -90,7 +90,13 @@
 
 <section>
   <div class="wrap">
-    <h2 class="t" data-ru="Что уже работает" data-en="What already works">Что уже работает</h2>
+    <h2 class="t" data-ru="Песочница прямо в браузере" data-en="Playground in your browser">Песочница прямо в браузере</h2>
+    <p>Весь движок — интерпретатор Lisp, программный 3D-растеризатор и физика
+    (сферы + рельеф + вода) — собран в WebAssembly и живёт на этой странице,
+    без сети после загрузки: <a href="playground.html"><b>открыть песочницу →</b></a>
+    (редактор кода, REPL, звук ударов; пресет «Физполигон» — кокосы на острове).</p>
+
+    <h2 class="t" data-ru="Что уже работает data-en="What already works">Что уже работает</h2>
     <div class="grid">
       <div class="card"><h3>3D-конвейер без GPU-API</h3>
         <p class="t" data-ru="T&amp;L, z-буфер, перспектива-корректные текстуры (свой PNG-декодер с полным inflate), батч-вершинник: сотни объектов одним draw call (~3× против по-объектных вызовов)."
