@@ -238,6 +238,8 @@
                (r (+ 0.26 (* 0.10 (hash2 k 57)))))
           (phys-add! *phys* (+ px jx 0.42) (+ h 3.4 k 0.15) (+ pz jz) r 0.42 0.35)
           (phys-vel! *phys* k (* (cos ang) 0.7) -0.4 (* (sin ang) 0.7))
+          ;; этап 11: раскрутка при сбросе — спин живёт в полёте, вода его гасит
+          (phys-angvel! *phys* k (* 12 (- (hash2 k 17) 0.5)) (* 8 (- (hash2 k 23) 0.5)) (* 12 (- (hash2 k 29) 0.5)))
           (go (+ k 1)))))
   (go 0))
 (define *ppos* (make-f32vec (* *cnut-n* 4) 0.0))
