@@ -39,3 +39,7 @@
 (table-set! *font* "X" (list 5 5 2 5 5))
 (table-set! *font* "Y" (list 5 5 2 2 2))
 (table-set! *font* "Z" (list 7 1 2 4 7))
+(table-set! *font* "N" (list 5 7 7 5 5))
+(table-set! *font* ":" (list 0 2 0 2 0))
+(table-set! *font* "/" (list 1 1 2 4 4))
+(table-set! *font* "-" (list 0 0 7 0 0))
