@@ -12,7 +12,6 @@ const MAX_LINES_LIMIT: usize = 800;
 // файлы удаляются из этого списка, пока список не станет пустым):
 const PENDING_REFACTORING: &[&str] = &[
     "src/main.rs",
-    "src/physics.rs",
     "src/jit.rs",
     "src/simd.rs",
     "src/audio.rs",
