@@ -11,7 +11,6 @@ const MAX_LINES_LIMIT: usize = 800;
 // Список монолитов, находящихся в процессе поэтапной декомпозиции (по мере рефакторинга
 // файлы удаляются из этого списка, пока список не станет пустым):
 const PENDING_REFACTORING: &[&str] = &[
-    "src/hal.rs",
     "src/main.rs",
     "src/physics.rs",
     "src/jit.rs",
