@@ -1,6 +1,13 @@
 ;; tetris.lisp — «НЕОНОВЫЙ 3D-ТЕТРИС» (rlisp-engine)
-;; Аппаратный 3D WebGPU, сочные неоновые блоки, частицы сгорания линий,
-;; управление WASD + стрелки, мгновенный Hard Drop (пробел) и Restart (R).
+;; Аппаратный 3D WebGPU, сочные неоновые блоки, физические точечные источники света,
+;; яркие вспышки сгорания линий, крупный четкий HUD, мгновенный Hard Drop (Space) и Restart (R).
+
+;; ——— Синхронизация разрешения экрана (фикс сброса при reload) ———
+(define (sync-screen-size!)
+  (let ((ws (window-size)))
+    (set! *screen-w* (car ws))
+    (set! *screen-h* (cadr ws))))
+(sync-screen-size!)
 
 ;; ——— Аудиоэффекты (чиптюн-синтезатор rlisp-engine) ———
 (defsound-synth 'tet-move 'triangle 340.0 0.03 0.005 0.01 0.2 0.01 0.0 0.5)
@@ -25,18 +32,57 @@
 
 (defpersistent *fall-timer* 0.0)
 
+;; ——— Вспышка при уничтожении слоев ———
+(defpersistent *flash-timer* 0.0)
+(defpersistent *flash-y* 0.0)
+(defpersistent *flash-col* (list 1.0 1.0 1.0))
+
 ;; ——— Система частиц при взрыве сгорающих линий ———
 (define *parts* (part-new))
 (define *parts-out* (make-f32vec 4096 0.0))
 (define *part-mesh* (mesh-cube 0.22))
 
-;; ——— Геометрия и текстуры 3D ———
+;; ——— Процедурные текстуры кристаллического неона и стоек шахты ———
+;; Чистый кристалл: яркая внешняя фаска 1.0, кристаллическое тело 0.85..0.96, без грязи
+(define (make-neon-crystal-tex n)
+  (let ((buf (tex-canvas n n)))
+    (dotimes (y n)
+      (dotimes (x n)
+        (let* ((edge (or (< x 2) (< y 2) (>= x (- n 2)) (>= y (- n 2))))
+               (bevel (or (< x 5) (< y 5) (>= x (- n 5)) (>= y (- n 5))))
+               (diag (or (= x y) (= (+ x y) (- n 1)))))
+          (if edge
+              (tex-px! buf n x y 1.0 1.0 1.0)
+              (if bevel
+                  (tex-px! buf n x y 0.95 0.95 0.98)
+                  (if diag
+                      (tex-px! buf n x y 0.92 0.92 0.95)
+                      (tex-px! buf n x y 0.85 0.86 0.90)))))))
+    (tex-fin buf n n)))
+
+;; Стойки шахты колодца с акцентными светоотражающими канавками
+(define (make-neon-wall-tex n)
+  (let ((buf (tex-canvas n n)))
+    (dotimes (y n)
+      (dotimes (x n)
+        (let* ((groove (or (< (mod y 8) 2) (< (mod x 8) 2)))
+               (edge (or (< x 2) (>= x (- n 2)))))
+          (if edge
+              (tex-px! buf n x y 0.80 0.90 1.0)
+              (if groove
+                  (tex-px! buf n x y 0.45 0.55 0.70)
+                  (tex-px! buf n x y 0.20 0.25 0.35))))))
+    (tex-fin buf n n)))
+
+(define *tex-crystal* (make-neon-crystal-tex 64))
+(define *tex-wall*    (make-neon-wall-tex 64))
+
+;; ——— Геометрия 3D ———
 (define *mesh-block* (mesh-cube 0.47))     ;; кубик 0.94 со скошенной фаской
 (define *mesh-wall*  (mesh-cube 0.50))     ;; стойки колодца
 (define *mesh-bg*    (mesh-plane 22 10))   ;; задняя стенка
 (define *bg-wire*    (list (mesh-pos *mesh-bg*) (mesh-plane-lines 10)))
 (define *uv-cube*    (mesh-cube-uv))
-(define *tex-panel*  (tex-panel 64))
 
 ;; ——— Яркие неоновые цвета тетромино ———
 (define (piece-color type)
@@ -162,17 +208,24 @@
   (let ((lines (find-full-lines)))
     (if (not (null? lines))
         (begin
-          ;; 1. Эффект взрыва частиц вдоль каждой сгоревшей линии
+          ;; 1. Активация мощной неоновой вспышки
+          (let* ((first-y (car lines))
+                 (sample-cell (table-get *grid* (+ (* first-y 10) 4) (list 0.2 0.9 1.0))))
+            (set! *flash-timer* 0.45)
+            (set! *flash-y* (- first-y 9.5))
+            (set! *flash-col* sample-cell))
+
+          ;; 2. Взрыв 160+ неоновых частиц вдоль каждой сгоревшей линии
           (for-each
            (lambda (y)
              (let ((wy (- y 9.5)))
                (dotimes (x 10)
                  (let ((cell (table-get *grid* (+ (* y 10) x) (list 0.9 0.9 1.0))))
-                   (part-burst! *parts* 12 (- x 4.5) wy 0.0 0.0 4.0 0.0 4.5 1.5 0.75 0.20
+                   (part-burst! *parts* 16 (- x 4.5) wy 0.0 0.0 4.0 0.0 6.0 2.0 0.85 0.22
                                 (car cell) (cadr cell) (caddr cell))))))
            lines)
 
-          ;; 2. Удаление линий и смещение поля
+          ;; 3. Удаление линий и смещение поля
           (for-each (lambda (y) (remove-line! y)) lines)
           (let ((n (length lines)))
             (set! *lines* (+ *lines* n))
@@ -215,6 +268,7 @@
   (set! *lines* 0)
   (set! *level* 1)
   (set! *game-over* #f)
+  (set! *flash-timer* 0.0)
   (set! *piece-type* (random-piece))
   (set! *next-type* (random-piece))
   (set! *piece-rot* 0)
@@ -226,9 +280,19 @@
 (define (update dt)
   (poll-input)
 
-  ;; Клавиша R / К перезапускает игру В ЛЮБОЙ МОМЕНТ!
-  (if (or (key-pressed? "r") (key-pressed? "R") (key-pressed? "к") (key-pressed? "К"))
-      (restart-game!))
+  ;; Клавиша R / К перезапускает игру В ЛЮБОЙ МОМЕНТ с мгновенным сбросом буфера
+  (if (or (key-pressed? "r") (key-down? "r") (key-pressed? "R") (key-down? "R")
+          (key-pressed? "к") (key-down? "к") (key-pressed? "К") (key-down? "К"))
+      (begin
+        (table-set! *keys* "r" -999.0)
+        (table-set! *keys* "R" -999.0)
+        (table-set! *keys* "к" -999.0)
+        (table-set! *keys* "К" -999.0)
+        (restart-game!)))
+
+  ;; Таймер неоновой вспышки сгорания линий
+  (if (> *flash-timer* 0.0)
+      (set! *flash-timer* (max 0.0 (- *flash-timer* dt))))
 
   ;; Симуляция физики частиц (осколки падают вниз)
   (if (> (part-n *parts*) 0)
@@ -255,9 +319,11 @@
                 ((valid-placement? *piece-type* new-rot (+ *piece-x* 1) *piece-y*)
                  (set! *piece-rot* new-rot) (set! *piece-x* (+ *piece-x* 1)) (play-sfx 'tet-rot 0.8)))))
 
-        ;; Мгновенный сброс (Hard Drop): Пробел (в окне браузера и в терминале)
-        (if (or (key-pressed? " ") (key-pressed? "space"))
+        ;; Мгновенный сброс (Hard Drop): Пробел (в браузере и в терминале)
+        (if (or (key-pressed? " ") (key-pressed? "space") (key-down? " ") (key-down? "space"))
             (begin
+              (table-set! *keys* "space" -999.0)
+              (table-set! *keys* " " -999.0)
               (set! *piece-y* (calc-ghost-y))
               (lock-piece!)
               (set! *fall-timer* 0.0)))
@@ -276,7 +342,7 @@
 
 ;; ——— 3D Рендеринг ———
 
-;; Сборка инстансов всех блоков колодца
+;; Сборка инстансов всех блоков колодца с динамическим неоновым освещением
 (define (collect-instances t)
   (let* ((insts '())
          (acol (piece-color *piece-type*))
@@ -284,10 +350,14 @@
          (ag (cadr acol))
          (ab (caddr acol))
          (px (+ *piece-x* 1.5))
-         (py (+ *piece-y* 1.0)))
+         (py (+ *piece-y* 1.0))
+         (flash? (> *flash-timer* 0.0))
+         (fk (if flash? (/ *flash-timer* 0.45) 0.0))
+         (fr (if flash? (* (car *flash-col*) fk) 0.0))
+         (fg (if flash? (* (cadr *flash-col*) fk) 0.0))
+         (fb (if flash? (* (caddr *flash-col*) fk) 0.0)))
 
-    ;; 1. Статичные блоки в стакане:
-    ;; Они освещаются падающей фигурой в реальном времени!
+    ;; 1. Статичные блоки в стакане: физически освещаются падающей фигурой и вспышками
     (for-each
      (lambda (entry)
        (let* ((key (string->number (car entry)))
@@ -299,10 +369,14 @@
               (dx (- gx px))
               (dy (- gy py))
               (d2 (+ (* dx dx) (* dy dy)))
-              (illum (if (< d2 36.0) (* (- 1.0 (/ (sqrt d2) 6.0)) 0.55) 0.0))
-              (cr (min 1.0 (+ (car col) (* ar illum))))
-              (cg (min 1.0 (+ (cadr col) (* ag illum))))
-              (cb (min 1.0 (+ (caddr col) (* ab illum)))))
+              (illum (if (< d2 49.0) (* (- 1.0 (/ (sqrt d2) 7.0)) 0.70) 0.0))
+              (flash-illum (if flash?
+                               (let ((fdy (abs (- wy *flash-y*))))
+                                 (max 0.0 (- 1.0 (/ fdy 6.0))))
+                               0.0))
+              (cr (min 1.0 (+ (car col) (* ar illum) (* fr flash-illum))))
+              (cg (min 1.0 (+ (cadr col) (* ag illum) (* fg flash-illum))))
+              (cb (min 1.0 (+ (caddr col) (* ab illum) (* fb flash-illum)))))
          (set! insts (append (inst-row wx wy 0.0 1.0 0.0 cr cg cb) insts))))
      (table-entries *grid*))
 
@@ -315,14 +389,14 @@
          (let ((wx (- (+ *piece-x* (car pt)) 4.5))
                (wy (- (+ ghost-y (cadr pt)) 9.5)))
            (set! insts (append (inst-row wx wy -0.05 0.9 0.0
-                                         (* (car col) 0.3)
-                                         (* (cadr col) 0.3)
-                                         (* (caddr col) 0.3)) insts))))
+                                         (* (car col) 0.32)
+                                         (* (cadr col) 0.32)
+                                         (* (caddr col) 0.32)) insts))))
        blocks))
 
     ;; 3. Активная падающая фигура: мощная неоновая эмиссия света
     (let* ((blocks (piece-blocks *piece-type* *piece-rot*))
-           (glow (+ 1.15 (* 0.20 (sin (* t 8.0)))))
+           (glow (+ 1.20 (* 0.25 (sin (* t 8.0)))))
            (cr (min 1.0 (* ar glow)))
            (cg (min 1.0 (* ag glow)))
            (cb (min 1.0 (* ab glow))))
@@ -335,73 +409,135 @@
 
     insts))
 
-;; Сборка инстансов рамки шахты
+;; Сборка инстансов рамки шахты с динамическим отражением неонового света
 (define (collect-frame-instances)
-  (let ((insts '()))
-    (dotimes (i 21)
-      (set! insts (append (inst-row -5.5 (- i 10.0) 0.0 1.0 0.0 0.12 0.16 0.28) insts))
-      (set! insts (append (inst-row 5.5 (- i 10.0) 0.0 1.0 0.0 0.12 0.16 0.28) insts)))
-    (let ((x -5))
-      (while (<= x 5)
-        (set! insts (append (inst-row x -10.5 0.0 1.0 0.0 0.12 0.16 0.28) insts))
-        (set! x (+ x 1))))
-    insts))
-
-(define (draw-3d-scene t)
-  ;; Настройка камеры: ракурс сверху-справа дает идеальный 3D-объем граней
-  (let* ((eye (list 1.6 1.8 23.5))
-         (target (list 0.0 0.0 0.0))
-         (mvp (camera-mvp eye target 0.85))
-         (insts (collect-instances t))
-         (frame-insts (collect-frame-instances))
-         (bg-model (mat4-mul (mat4-mul (mat-translate 0.0 0.0 -0.55)
-                                       (mat-scale 0.55 1.05 1.0))
-                             (mat-rotate-x 1.5707963)))
+  (let* ((insts '())
          (acol (piece-color *piece-type*))
          (ar (car acol))
          (ag (cadr acol))
          (ab (caddr acol))
          (px (+ *piece-x* 1.5))
-         (py (+ *piece-y* 1.0)))
+         (py (+ *piece-y* 1.0))
+         (p-wx (- px 4.5))
+         (p-wy (- py 9.5))
+         (flash? (> *flash-timer* 0.0))
+         (fk (if flash? (/ *flash-timer* 0.45) 0.0))
+         (fr (if flash? (* (car *flash-col*) fk) 0.0))
+         (fg (if flash? (* (cadr *flash-col*) fk) 0.0))
+         (fb (if flash? (* (caddr *flash-col*) fk) 0.0)))
 
-    ;; 1. Задняя панель колодца: глубокий темный космос + тонкая неоновая сетка ячеек
+    ;; Левая и правая вертикальные стойки
+    (dotimes (i 21)
+      (let* ((wy (- i 10.0))
+             ;; Освещение левой стойки
+             (ldx (- -5.5 p-wx))
+             (ldy (- wy p-wy))
+             (ld2 (+ (* ldx ldx) (* ldy ldy)))
+             (l-ill (if (< ld2 64.0) (* (- 1.0 (/ (sqrt ld2) 8.0)) 0.75) 0.0))
+             (lf-ill (if flash? (max 0.0 (- 1.0 (/ (abs (- wy *flash-y*)) 7.0))) 0.0))
+             (lcr (min 1.0 (+ 0.12 (* ar l-ill) (* fr lf-ill 1.2))))
+             (lcg (min 1.0 (+ 0.16 (* ag l-ill) (* fg lf-ill 1.2))))
+             (lcb (min 1.0 (+ 0.28 (* ab l-ill) (* fb lf-ill 1.2))))
+
+             ;; Освещение правой стойки
+             (rdx (- 5.5 p-wx))
+             (rdy (- wy p-wy))
+             (rd2 (+ (* rdx rdx) (* rdy rdy)))
+             (r-ill (if (< rd2 64.0) (* (- 1.0 (/ (sqrt rd2) 8.0)) 0.75) 0.0))
+             (rf-ill (if flash? (max 0.0 (- 1.0 (/ (abs (- wy *flash-y*)) 7.0))) 0.0))
+             (rcr (min 1.0 (+ 0.12 (* ar r-ill) (* fr rf-ill 1.2))))
+             (rcg (min 1.0 (+ 0.16 (* ag r-ill) (* fg rf-ill 1.2))))
+             (rcb (min 1.0 (+ 0.28 (* ab r-ill) (* fb rf-ill 1.2)))))
+
+        (set! insts (append (inst-row -5.5 wy 0.0 1.0 0.0 lcr lcg lcb) insts))
+        (set! insts (append (inst-row  5.5 wy 0.0 1.0 0.0 rcr rcg rcb) insts))))
+
+    ;; Нижнее основание шахты
+    (let ((x -5))
+      (while (<= x 5)
+        (let* ((wx x)
+               (wy -10.5)
+               (bdx (- wx p-wx))
+               (bdy (- wy p-wy))
+               (bd2 (+ (* bdx bdx) (* bdy bdy)))
+               (b-ill (if (< bd2 64.0) (* (- 1.0 (/ (sqrt bd2) 8.0)) 0.75) 0.0))
+               (bf-ill (if flash? (max 0.0 (- 1.0 (/ (abs (- wy *flash-y*)) 7.0))) 0.0))
+               (bcr (min 1.0 (+ 0.12 (* ar b-ill) (* fr bf-ill 1.2))))
+               (bcg (min 1.0 (+ 0.16 (* ag b-ill) (* fg bf-ill 1.2))))
+               (bcb (min 1.0 (+ 0.28 (* ab b-ill) (* fb bf-ill 1.2)))))
+          (set! insts (append (inst-row wx wy 0.0 1.0 0.0 bcr bcg bcb) insts))
+          (set! x (+ x 1)))))
+    insts))
+
+(define (draw-3d-scene t)
+  ;; Настройка конвейера освещения и камеры
+  (gpu3d-view 1.6 1.8 23.5)
+  (gpu3d-light 0.25 0.55 0.80 0.65 0.45 0.60 32.0)
+  (gpu3d-clear-lights)
+
+  (let* ((eye (list 1.6 1.8 23.5))
+         (target (list 0.0 0.0 0.0))
+         (mvp (camera-mvp eye target 0.85))
+         (acol (piece-color *piece-type*))
+         (ar (car acol))
+         (ag (cadr acol))
+         (ab (caddr acol))
+         (px (+ *piece-x* 1.5))
+         (py (+ *piece-y* 1.0))
+         (p-wx (- px 4.5))
+         (p-wy (- py 9.5))
+         (insts (collect-instances t))
+         (frame-insts (collect-frame-instances))
+         (bg-model (mat4-mul (mat4-mul (mat-translate 0.0 0.0 -0.55)
+                                       (mat-scale 0.55 1.05 1.0))
+                             (mat-rotate-x 1.5707963))))
+
+    ;; 1. Добавление динамического точечного источника света от падающей фигуры
+    (gpu3d-add-point-light p-wx p-wy 1.2 (* ar 2.2) (* ag 2.2) (* ab 2.2) 9.5 1.2)
+
+    ;; 2. Добавление сверхяркого точечного источника при сгорании линии
+    (if (> *flash-timer* 0.0)
+        (let ((f (* (/ *flash-timer* 0.45) 3.5))
+              (fc *flash-col*))
+          (gpu3d-add-point-light 0.0 *flash-y* 1.6 (* (car fc) f) (* (cadr fc) f) (* (caddr fc) f) 18.0 1.6)))
+
+    ;; 3. Задняя панель колодца: глубокий темный космос + тонкая неоновая сетка ячеек
     (draw-mesh *mesh-bg* bg-model mvp (list 0.02 0.025 0.045))
-    (draw-wire-lines *bg-wire* bg-model mvp (list 0.06 0.14 0.24))
+    (let ((wire-col (if (> *flash-timer* 0.0)
+                        (let ((f (* (/ *flash-timer* 0.45) 1.8)))
+                          (list (min 1.0 (+ 0.06 (* (car *flash-col*) f)))
+                                (min 1.0 (+ 0.14 (* (cadr *flash-col*) f)))
+                                (min 1.0 (+ 0.24 (* (caddr *flash-col*) f)))))
+                        (list 0.06 0.14 0.24))))
+      (draw-wire-lines *bg-wire* bg-model mvp wire-col))
 
-    ;; 2. Световой ореол на заднике под падающей фигурой (свет скользит вместе с блоками)
-    (let* ((glow-x (- px 4.5))
-           (glow-y (- py 9.5))
-           (glow-m (mat4-mul (mat-translate glow-x glow-y -0.52)
-                             (mat-scale 0.25 0.25 1.0))))
-      (draw-wire-lines *bg-wire* glow-m mvp (list (* ar 0.6) (* ag 0.6) (* ab 0.6))))
+    ;; 6. Рамка шахты (металл/канавки) и блоки Тетриса (кристаллический неон)
+    (draw-batch-tex *mesh-wall* *uv-cube* *tex-wall* frame-insts mvp)
+    (draw-batch-tex *mesh-block* *uv-cube* *tex-crystal* insts mvp)
 
-    ;; 3. Рамка шахты и блоки Тетриса (WebGPU аппаратный батчинг)
-    (draw-batch-tex *mesh-wall* *uv-cube* *tex-panel* frame-insts mvp)
-    (draw-batch-tex *mesh-block* *uv-cube* *tex-panel* insts mvp)
-
-    ;; 4. Отрисовка взрывающихся неоновых частиц (осколки сгоревших линий)
+    ;; 7. Отрисовка взрывающихся неоновых частиц (осколки сгоревших линий)
     (if (> (part-n *parts*) 0)
         (let* ((n (part-dump! *parts* *parts-out*))
                (p-insts '()))
           (define (collect-p k)
             (if (< k n)
                 (let* ((i (* k 8))
-                       (px (f32ref *parts-out* i))
-                       (py (f32ref *parts-out* (+ i 1)))
-                       (pz (f32ref *parts-out* (+ i 2)))
+                       (ptx (f32ref *parts-out* i))
+                       (pty (f32ref *parts-out* (+ i 1)))
+                       (ptz (f32ref *parts-out* (+ i 2)))
                        (sz (f32ref *parts-out* (+ i 3)))
                        (cr (f32ref *parts-out* (+ i 4)))
                        (cg (f32ref *parts-out* (+ i 5)))
                        (cb (f32ref *parts-out* (+ i 6)))
                        (lf (f32ref *parts-out* (+ i 7)))
                        (sc (* sz (+ 0.35 (* 0.65 lf)))))
-                  (set! p-insts (append (inst-row px py pz sc 0.0 cr cg cb) p-insts))
+                  (set! p-insts (append (inst-row ptx pty ptz sc 0.0 cr cg cb) p-insts))
                   (collect-p (+ k 1)))))
           (collect-p 0)
           (if (not (null? p-insts))
               (draw-batch *part-mesh* p-insts mvp))))
 
-    ;; 5. Вращающееся 3D-превью следующей фигуры («NEXT») сбоку
+    ;; 8. Вращающееся 3D-превью следующей фигуры («NEXT») сбоку
     (let* ((next-col (piece-color *next-type*))
            (next-blocks (piece-blocks *next-type* 0))
            (next-insts '()))
@@ -411,43 +547,58 @@
                (ny (- (cadr pt) 0.5)))
            (set! next-insts (append (inst-row nx ny 0.0 0.8 (* t 1.5)
                                              (car next-col) (cadr next-col) (caddr next-col))
-                                   next-insts))))
+                                    next-insts))))
        next-blocks)
       (let ((next-model (mat-translate 9.5 5.5 0.0)))
-        (draw-batch-tex *mesh-block* *uv-cube* *tex-panel* next-insts (mat4-mul mvp next-model))))))
+        (draw-batch-tex *mesh-block* *uv-cube* *tex-crystal* next-insts (mat4-mul mvp next-model))))))
 
-;; ——— 2D Интерфейс (HUD) с КРУПНЫМ шрифтом ———
+;; ——— 2D Интерфейс (HUD) с КРУПНЫМ шрифтом и адаптацией под разрешение ———
 (define (draw-hud)
-  ;; Название
-  (draw-text "NEON TETRIS 3D" 14 8 2 (list 0.1 0.95 1.0))
+  (let* ((large? (>= *screen-w* 500))
+         (s-title (if large? 3 2))
+         (s-lbl   (if large? 2 1))
+         (s-val   (if large? 3 2))
+         (pad-x   (if large? 20 12))
+         (y-sc    (if large? 58 34))
+         (y-sc-v  (if large? 76 46))
+         (y-ln    (if large? 116 70))
+         (y-ln-v  (if large? 134 82))
+         (y-lv    (if large? 174 106))
+         (y-lv-v  (if large? 192 118))
+         (next-x  (- *screen-w* (if large? 110 76)))
+         (next-y  (if large? 58 36)))
 
-  ;; КРУПНЫЕ показатели: очки, линии, уровень
-  (draw-text "SCORE" 14 34 1 (list 0.55 0.65 0.80))
-  (draw-text (number->string *score*) 14 46 2 (list 1.0 1.0 1.0))
+    ;; Заголовок
+    (draw-text "NEON TETRIS 3D" pad-x (if large? 16 8) s-title (list 0.10 0.95 1.00))
 
-  (draw-text "LINES" 14 70 1 (list 0.55 0.65 0.80))
-  (draw-text (number->string *lines*) 14 82 2 (list 0.35 0.90 1.0))
+    ;; КРУПНЫЕ показатели: очки, линии, уровень
+    (draw-text "SCORE" pad-x y-sc s-lbl (list 0.55 0.65 0.85))
+    (draw-text (number->string *score*) pad-x y-sc-v s-val (list 1.00 1.00 1.00))
 
-  (draw-text "LEVEL" 14 106 1 (list 0.55 0.65 0.80))
-  (draw-text (number->string *level*) 14 118 2 (list 1.0 0.85 0.20))
+    (draw-text "LINES" pad-x y-ln s-lbl (list 0.55 0.65 0.85))
+    (draw-text (number->string *lines*) pad-x y-ln-v s-val (list 0.35 0.90 1.00))
 
-  ;; Окно NEXT сбоку (крупный заголовок)
-  (draw-text "NEXT" (- *screen-w* 76) 36 2 (list 0.8 0.85 1.0))
+    (draw-text "LEVEL" pad-x y-lv s-lbl (list 0.55 0.65 0.85))
+    (draw-text (number->string *level*) pad-x y-lv-v s-val (list 1.00 0.85 0.20))
 
-  ;; Подсказки управления внизу
-  (draw-text "A/D: MOVE   W: ROTATE   S: SOFT DROP   SPACE: HARD DROP   R: RESTART"
-             (/ (- *screen-w* (text-width "A/D: MOVE   W: ROTATE   S: SOFT DROP   SPACE: HARD DROP   R: RESTART" 1)) 2)
-             (- *screen-h* 14) 1 (list 0.5 0.6 0.7))
+    ;; Окно NEXT сбоку (крупный заголовок)
+    (draw-text "NEXT" next-x next-y s-lbl (list 0.85 0.90 1.00))
 
-  ;; Экран завершения
-  (if *game-over*
-      (begin
-        (draw-text "GAME OVER"
-                   (/ (- *screen-w* (text-width "GAME OVER" 3)) 2)
-                   (- (/ *screen-h* 2) 20) 3 (list 1.0 0.25 0.25))
-        (draw-text "PRESS R TO RESTART"
-                   (/ (- *screen-w* (text-width "PRESS R TO RESTART" 1)) 2)
-                   (+ (/ *screen-h* 2) 22) 1 (list 1.0 1.0 1.0)))))
+    ;; Подсказки управления внизу по центру экрана
+    (let ((hint "A/D: MOVE   W: ROTATE   S: SOFT DROP   SPACE: HARD DROP   R: RESTART"))
+      (draw-text hint
+                 (/ (- *screen-w* (text-width hint 1)) 2)
+                 (- *screen-h* (if large? 20 14)) 1 (list 0.55 0.65 0.75)))
+
+    ;; Экран завершения
+    (if *game-over*
+        (begin
+          (draw-text "GAME OVER"
+                     (/ (- *screen-w* (text-width "GAME OVER" (if large? 4 3))) 2)
+                     (- (/ *screen-h* 2) (if large? 30 20)) (if large? 4 3) (list 1.00 0.25 0.25))
+          (draw-text "PRESS R TO RESTART"
+                     (/ (- *screen-w* (text-width "PRESS R TO RESTART" (if large? 2 1))) 2)
+                     (+ (/ *screen-h* 2) (if large? 28 22)) (if large? 2 1) (list 1.00 1.00 1.00))))))
 
 ;; ——— Макрос кадра 3D ———
 (defmacro with-frame3d body
@@ -455,6 +606,7 @@
 
 ;; ——— Главный цикл отрисовки кадра ———
 (define (draw)
+  (sync-screen-size!)
   (let ((t (time-now)))
     (with-frame3d
      (draw-3d-scene t)
