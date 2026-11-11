@@ -245,3 +245,53 @@ fn audio_lisp_primitives_flow() {
         assert!(matches!(tb.get("voices"), Some(Value::Int(0))));
     }
 }
+
+#[test]
+fn fill_rect_a_полутона_и_края() {
+    let mut hal = Hal::new(OutputMode::Silent, 32, 32);
+    hal.clear_all(0, 0, 0);
+    // a=0.5 поверх чёрного цветом 200 → ~100
+    hal.fill_rect_a(0, 0, 16, 16, 200, 200, 200, 0.5);
+    assert_eq!(hal.fb[0], 100);
+    // заливаем всё базой 100 → a=0 не трогает, a=1 красит, a=0.5 полутон
+    hal.fill_rect_a(0, 0, 32, 32, 100, 100, 100, 1.0);
+    hal.fill_rect_a(8, 8, 8, 8, 255, 0, 0, 0.0);
+    assert_eq!(hal.fb[(10 * 32 + 10) * 4], 100, "a=0 обязан быть no-op");
+    hal.fill_rect_a(8, 8, 8, 8, 255, 0, 0, 1.0);
+    assert_eq!(hal.fb[(10 * 32 + 10) * 4], 255, "a=1 — полный цвет");
+    hal.fill_rect_a(0, 0, 4, 4, 0, 0, 0, 0.5);
+    assert_eq!(hal.fb[132], 50, "полутон 100→0 при a=0.5, пиксель (1,1)");
+    // клампы в границах: запрос мимо канваса не паникует
+    hal.fill_rect_a(-4, -4, 8, 8, 9, 9, 9, 0.5);
+    hal.fill_rect_a(30, 30, 8, 8, 9, 9, 9, 0.5);
+    // детерминизм: два прогона побитово равны
+    let mut hal2 = Hal::new(OutputMode::Silent, 32, 32);
+    hal2.clear_all(0, 0, 0);
+    hal2.fill_rect_a(0, 0, 16, 16, 200, 200, 200, 0.5);
+    let mut hal3 = Hal::new(OutputMode::Silent, 32, 32);
+    hal3.clear_all(0, 0, 0);
+    hal3.fill_rect_a(0, 0, 16, 16, 200, 200, 200, 0.5);
+    assert_eq!(hal2.fb, hal3.fb);
+}
+
+#[test]
+fn spot_light_спад_аддитив_и_кламп() {
+    let mut hal = Hal::new(OutputMode::Silent, 64, 64);
+    hal.clear_all(10, 10, 10);
+    // центр светится сильнее края
+    hal.spot_light(32.0, 32.0, 20.0, 2.0, 100, 100, 100);
+    let c = hal.fb[(32 * 64 + 32) * 4] as i32;
+    let edge = hal.fb[(32 * 64 + 48) * 4] as i32;
+    assert!(c > edge, "центр {} должен быть ярче края {}", c, edge);
+    assert!(edge > 10, "на границе радиуса вклад есть: {}", edge);
+    // кламп сверху: сильный свет не переполняет
+    assert!(c <= 255);
+    // вне радиуса — не тронуто
+    let far = hal.fb[(2 * 64 + 2) * 4] as i32;
+    assert_eq!(far, 10);
+    // нулевой радиус/интенсивность — no-op
+    let before = hal.fb.clone();
+    hal.spot_light(32.0, 32.0, 0.0, 5.0, 255, 255, 255);
+    hal.spot_light(32.0, 32.0, 20.0, 0.0, 255, 255, 255);
+    assert_eq!(hal.fb, before);
+}
