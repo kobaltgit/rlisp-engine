@@ -9,14 +9,36 @@ HTML = "file://" + os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "docs", "playground.html")
 
+def pick(pg, name):
+    # evaluate+change вместо select_option: actionability-стабильность
+    # на странице с активным rAF-циклом иногда не наступает
+    pg.evaluate("""(name) => {
+        const sel = document.getElementById('preset');
+        sel.value = name;
+        sel.dispatchEvent(new Event('change'));
+    }""", name)
+
 with sync_playwright() as p:
-    b = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
+    b = p.chromium.launch()
     pg = b.new_page(viewport={"width": 1280, "height": 900})
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
-    pg.goto(HTML)
-    pg.select_option("#preset", "Физполигон (3D, физика, вода)")
+    pg.goto(HTML, wait_until="domcontentloaded", timeout=90000)
+    pg.wait_for_timeout(2000)
+    pick(pg, "ДОЛИНА (ландшафт: озеро, лес, день-ночь)")
+    # ДОЛИНА: первый кадр + HUD
+    pg.wait_for_function(
+        "() => [...document.querySelectorAll('#console div')].some(e => e.textContent.includes('DOLINA'))",
+        timeout=20000)
+    status_v = ""
+    for _ in range(40):
+        pg.wait_for_timeout(500)
+        status_v = pg.text_content("#status") or ""
+        if "fps" in status_v: break
+    print("долина статус:", status_v)
+    assert "fps" in status_v, "ДОЛИНА не стартовала в песочнице"
+    pick(pg, "Физполигон (3D, физика, вода)")
     pg.click("#run")
     # сцена с атмосферой грузится несколько секунд — поллим статуса до 20 с
     status = ""
@@ -66,7 +88,7 @@ with sync_playwright() as p:
     print("статус после R:", status2)
 
     # смена пресета: 2D-шаблон
-    pg.select_option("#preset", "Только 2D (шаблон)")
+    pick(pg, "Только 2D (шаблон)")
     pg.wait_for_timeout(2500)
     status3 = pg.text_content("#status")
     print("статус 2D:", status3)
@@ -82,7 +104,7 @@ with sync_playwright() as p:
     assert px2[0] > 1000, "2D-канвас пуст"
 
     # мини-сцена с мячами
-    pg.select_option("#preset", "Мячи и трамплин (мини-сцена)")
+    pick(pg, "Мячи и трамплин (мини-сцена)")
     pg.wait_for_function(
         "() => [...document.querySelectorAll('#console div')].some(e => e.textContent.includes('BALLS'))",
         timeout=10000)
@@ -99,7 +121,7 @@ with sync_playwright() as p:
     assert not hard, f"JS-ошибки: {hard[:3]}"
 
     # ——— ОАЗИС: переключение пресета, клавиши, HUD, лиса ———
-    pg.select_option("#preset", "ОАЗИС (FPS: лисы, стрельба, волны)")
+    pick(pg, "ОАЗИС (FPS: лисы, стрельба, волны)")
     pg.click("#run")
     status2 = ""
     for _ in range(40):
@@ -139,7 +161,7 @@ with sync_playwright() as p:
 
 
     # ——— ШТОЛЬНЯ: хоррор-пресет, старт, фонарь ———
-    pg.select_option("#preset", "ШТОЛЬНЯ (хоррор: фонарь, монстр)")
+    pick(pg, "ШТОЛЬНЯ (хоррор: фонарь, монстр)")
     pg.click("#run")
     status3 = ""
     for _ in range(40):

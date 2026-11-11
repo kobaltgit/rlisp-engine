@@ -1,0 +1,16 @@
+(load "core.lisp")(load "textures.lisp")(load "font.lisp")(load "graphics.lisp")(load "input.lisp")(load "render3d.lisp")
+(load "valley.lisp")
+(sky-vc! 1.0)
+(print (string-append "sky-idx len=" (number->string (f32vec-length *sky-idx*))
+                      " sky-vc len=" (number->string (f32vec-length *sky-vc*))
+                      " pos len=" (number->string (f32vec-length *sky-pos*))))
+;; звёздная вершина 119: позиция и цвет
+(print (string-append "star v119 xyz=" (number->string (f32ref *sky-pos* 357))
+                      "," (number->string (f32ref *sky-pos* 358))
+                      "," (number->string (f32ref *sky-pos* 359))
+                      " rgba=" (number->string (f32ref *sky-vc* 476))
+                      "," (number->string (f32ref *sky-vc* 477))
+                      "," (number->string (f32ref *sky-vc* 478))
+                      "," (number->string (f32ref *sky-vc* 479))))
+;; последний индекс
+(print (string-append "last idx=" (number->string (f32ref *sky-idx* (- (f32vec-length *sky-idx*) 1)))))
