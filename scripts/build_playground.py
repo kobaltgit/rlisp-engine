@@ -9,7 +9,8 @@ import json
 import re
 import sys
 
-REPO = "/home/z/my-project/work/portfolio/rlisp-engine"
+import os
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = f"{REPO}/scripts/playground_template.html"
 OUT = f"{REPO}/docs/playground.html"
 WASM = f"{REPO}/target/wasm32-unknown-unknown/release/rlisp-engine.wasm"

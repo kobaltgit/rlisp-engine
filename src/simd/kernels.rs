@@ -403,8 +403,14 @@ fn dispatch2(a: &[f32], b: &[f32], out: &mut [f32], op: u8) {
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let _ = op;
-        scalar::add(a, b, out) // заглушка, не используется
+        // фолбэк для ARM/прочего: честный маппинг операции, а не add всегда
+        // (раньше тут была «заглушка, не используется» — vsub/vmul на
+        // aarch64 считали сложение, тест эквивалентности падал на macOS)
+        match op {
+            1 => scalar::sub(a, b, out),
+            2 => scalar::mul(a, b, out),
+            _ => scalar::add(a, b, out),
+        }
     }
 }
 

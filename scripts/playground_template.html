@@ -55,6 +55,7 @@
       <select id="preset"></select>
       <button id="run" class="primary">▶ Запустить</button>
       <button id="sound">🔊 звук</button>
+      <button id="share" title="Ссылка со встроенной сценой: скопируется в буфер">🔗 Ссылка</button>
     </div>
     <textarea id="code" spellcheck="false"></textarea>
     <div id="replrow">
@@ -70,6 +71,7 @@
       <button class="res" data-w="320" data-h="240">320×240</button>
       <button class="res" data-w="400" data-h="300">400×300</button>
       <button class="res" data-w="512" data-h="384">512×384</button>
+      <button id="shot" title="Скачать текущий кадр PNG">📷 PNG</button>
     </div>
     <div id="console"></div>
     <div class="kbd">клавиши сцене: <b>A/D</b> — камера, <b>R</b> — пересыпать кокосы · фокус на канвасе</div>
@@ -284,6 +286,37 @@ $("code").addEventListener("keydown", (e) => {
   }
 });
 $("run").addEventListener("click", run);
+
+// ——— экспорт кадра PNG ————————————————————————————————————————————————
+$("shot").addEventListener("click", () => {
+  const c = $("screen");
+  c.toBlob((b) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "rlisp-playground-" + Date.now() + ".png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    con("кадр сохранён: " + a.download, "sys");
+  });
+});
+
+// ——— шаринг сцены через URL-хеш (#code=...) ————————————————————————
+$("share").addEventListener("click", async () => {
+  const url = location.href.split("#")[0] +
+    "#code=" + encodeURIComponent($("code").value);
+  history.replaceState(null, "", "#code=" + encodeURIComponent($("code").value));
+  const kb = (url.length / 1024).toFixed(1);
+  try {
+    await navigator.clipboard.writeText(url);
+    con("ссылка со сценой скопирована в буфер (" + kb + " КБ) — открой её: сцена загрузится сама", "sys");
+  } catch (e) {
+    con("ссылка со сценой готова в адресной строке (" + kb + " КБ)", "sys");
+  }
+});
+function sceneFromHash() {
+  const m = location.hash.match(/^#code=(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 $("sound").addEventListener("click", () => {
   audioOn = !audioOn;
   $("sound").textContent = audioOn ? "🔊 звук" : "🔇 тихо";
@@ -316,12 +349,25 @@ async function run() {
 
 // ——— старт ———————————————————————————————————————————————————————————
 (async () => {
-  $("code").value = PRESETS[presetSel.value];
+  const fromLink = sceneFromHash();
+  if (fromLink !== null) {
+    $("code").value = fromLink;
+    const o = document.createElement("option");
+    o.textContent = "Сцена из ссылки"; o.value = "";
+    presetSel.insertBefore(o, presetSel.firstChild);
+    presetSel.value = "";
+  } else {
+    $("code").value = PRESETS[presetSel.value];
+  }
   await instantiate();
   con("rlisp-engine в WebAssembly: интерпретатор Lisp, программный 3D-растеризатор, физика (сферы/heightfield), WASM " +
       Math.round(atob(WASM_B64).length / 1024) + " КБ", "sys");
   run();
   requestAnimationFrame(loop);
+  // после очистки консоли при запуске — сообщение о сцене из ссылки
+  if (fromLink !== null) {
+    setTimeout(() => con("сцена загружена из ссылки — правь код и жми «Запустить»", "sys"), 400);
+  }
 })();
 </script>
 </body>
