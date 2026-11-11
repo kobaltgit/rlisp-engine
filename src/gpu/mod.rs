@@ -28,13 +28,13 @@ pub mod resources;
 pub mod types;
 
 #[cfg(feature = "wgpu")]
-mod wgpu_quad;
-#[cfg(feature = "wgpu")]
 mod wgpu_2d;
 #[cfg(feature = "wgpu")]
 mod wgpu_3d;
 #[cfg(feature = "wgpu")]
 pub mod wgpu_backend;
+#[cfg(feature = "wgpu")]
+mod wgpu_quad;
 
 #[cfg(test)]
 mod tests;
@@ -53,5 +53,8 @@ pub fn create_wgpu_backend(_w: usize, _h: usize) -> Result<Box<dyn GpuBackend>, 
 
 #[cfg(feature = "wgpu")]
 pub fn create_wgpu_backend(w: usize, h: usize) -> Result<Box<dyn GpuBackend>, String> {
-    Ok(Box::new(wgpu_backend::WgpuRenderer::new(w.max(8), h.max(8))?))
+    Ok(Box::new(wgpu_backend::WgpuRenderer::new(
+        w.max(8),
+        h.max(8),
+    )?))
 }

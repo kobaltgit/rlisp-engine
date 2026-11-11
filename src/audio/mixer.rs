@@ -1,7 +1,7 @@
 // src/audio/mixer.rs — Софтверный аудиомикшер и управление голосами.
 
-use std::collections::HashMap;
 use super::synth::SoundBuffer;
+use std::collections::HashMap;
 
 /// Голос воспроизведения звука в микшере.
 #[derive(Clone, Debug)]
@@ -68,8 +68,17 @@ impl AudioMixer {
     }
 
     /// Воспроизведение звука с параметрами (громкость, питч, панорама, зацикливание).
-    pub fn play(&mut self, sound_id: u64, volume: f32, pitch: f32, pan: f32, looping: bool) -> Result<u64, String> {
-        let sound = self.sounds.get(&sound_id)
+    pub fn play(
+        &mut self,
+        sound_id: u64,
+        volume: f32,
+        pitch: f32,
+        pan: f32,
+        looping: bool,
+    ) -> Result<u64, String> {
+        let sound = self
+            .sounds
+            .get(&sound_id)
             .ok_or_else(|| format!("audio: неизвестный звук id={}", sound_id))?;
 
         let vol = volume.clamp(0.0, 2.0);

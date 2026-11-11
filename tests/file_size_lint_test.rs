@@ -46,7 +46,10 @@ fn test_no_file_exceeds_size_limit() {
 
         let lines = count_lines(&file);
         if lines > MAX_LINES_LIMIT {
-            violations.push(format!("{} ({} строк > лимит {})", norm_path, lines, MAX_LINES_LIMIT));
+            violations.push(format!(
+                "{} ({} строк > лимит {})",
+                norm_path, lines, MAX_LINES_LIMIT
+            ));
         }
     }
 

@@ -4,8 +4,8 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::gc::{self, Gc};
 use super::Value;
+use crate::gc::{self, Gc};
 
 // Этап 2: окружения и замыкания живут в GC-куче (src/gc.rs).
 pub type GlobalCell = Rc<RefCell<Gc>>;

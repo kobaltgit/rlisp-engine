@@ -1,9 +1,9 @@
 // src/render3d/raster/transparent.rs — Прозрачный проход (alpha-blending, far→near сортировка, z-тест без z-записи).
 
-use crate::hal::Hal;
 use super::super::shading::*;
 use super::super::types::*;
 use super::tex::*;
+use crate::hal::Hal;
 
 /// Прозрачный проход (этап 9): сортируем очередь far→near по видовой глубине
 /// центра и рисуем с src-alpha блендингом (z-тест есть, z-записи нет,

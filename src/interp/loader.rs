@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::gc;
 use super::{eval, parse_program, CoreCtx};
+use crate::gc;
 
 // ——————————————————————————— загрузка файлов ———————————————————————————
 
@@ -104,7 +104,10 @@ pub static EMBEDDED_LISP: &[(&str, &str)] = &[
         "phys_poly.lisp",
         include_str!("../../assets/lisp/phys_poly.lisp"),
     ),
-    ("physics.lisp", include_str!("../../assets/lisp/physics.lisp")),
+    (
+        "physics.lisp",
+        include_str!("../../assets/lisp/physics.lisp"),
+    ),
     (
         "render3d.lisp",
         include_str!("../../assets/lisp/render3d.lisp"),

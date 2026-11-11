@@ -108,8 +108,8 @@ fn jit_базовые_ядра() {
     ];
     for (src, args, expect) in cases {
         let g = make_lambda(&src);
-        let jf = compile(&Value::Lambda(g))
-            .unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
+        let jf =
+            compile(&Value::Lambda(g)).unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
         let vals: Vec<Value> = args.iter().map(|v| Value::Float(*v)).collect();
         let r = call_jitted(&jf, &vals).unwrap_or_else(|| panic!("гард упал: {}", src));
         match r {
@@ -146,7 +146,8 @@ fn jit_деоптимизация_unsupported() {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 fn jit_этап15_cond_letstar_минмакс() {
     // паритет interp vs JIT по битам (через нормализацию Int/Float/Bool)
-    let cases: Vec<(String, Vec<f64>)> = vec![
+    let cases: Vec<(String, Vec<f64>)> =
+        vec![
         (
             "(define f (lambda (x) (cond ((< x 0) (* x -1)) ((> x 10) (+ x 100)) (else (* x 2)))))"
                 .into(),
@@ -190,8 +191,8 @@ fn jit_этап15_cond_letstar_минмакс() {
     ];
     for (src, args) in cases {
         let g = make_lambda(&src);
-        let jf = compile(&Value::Lambda(g))
-            .unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
+        let jf =
+            compile(&Value::Lambda(g)).unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
         let vals: Vec<Value> = args.iter().map(|v| Value::Float(*v)).collect();
         let jit_r = call_jitted(&jf, &vals).unwrap_or_else(|| panic!("гард: {}", src));
         // путь интерпретатора — та же лямбда через apply_lambda
@@ -509,4 +510,3 @@ fn jit_деоптимизация_non_linux() {
     let g = make_lambda(src);
     assert!(compile(&Value::Lambda(g)).is_none());
 }
-

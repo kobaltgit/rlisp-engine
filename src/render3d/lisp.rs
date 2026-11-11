@@ -479,11 +479,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let idx = to_f32s(&args[3])?;
         let model = to_f32s(&args[4])?;
         let mvp = to_f32s(&args[5])?;
-        let texid = if n == 8 {
-            int_val(&args[6])?
-        } else {
-            0
-        };
+        let texid = if n == 8 { int_val(&args[6])? } else { 0 };
         let mut h = hc.borrow_mut();
         let drawn = mesh_draw(
             &mut h,

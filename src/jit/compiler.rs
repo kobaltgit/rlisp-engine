@@ -1,10 +1,10 @@
 // src/jit/compiler.rs — компилятор: понижение AST Lisp в линейный IR и эмиссия машинного кода.
 
-use crate::gc;
-use crate::interp::Value;
 use super::emit;
 use super::ir::IrOp;
 use super::runtime::JitFn;
+use crate::gc;
+use crate::interp::Value;
 
 pub struct Compiler {
     _arity: usize,

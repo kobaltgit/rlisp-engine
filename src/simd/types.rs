@@ -51,8 +51,8 @@ pub fn active_level() -> SimdLevel {
 pub fn calibrate() -> SimdLevel {
     #[cfg(target_arch = "x86_64")]
     {
-        use std::arch::is_x86_feature_detected;
         use super::kernels::level_add;
+        use std::arch::is_x86_feature_detected;
 
         let n = 2048usize;
         let a: Vec<f32> = (0..n).map(|i| (i % 97) as f32 * 0.5).collect();

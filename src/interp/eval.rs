@@ -1,10 +1,10 @@
 // src/interp/eval.rs — Древовидный интерпретатор, аппликация функций и макрорасширение.
 
-use crate::gc::{self, Gc, LambdaData};
 use super::{
     as_list, as_sym, chain_parts, env_define, env_get, env_set, fmt_value, is_sym, truthy,
     vec_into_chain, Value,
 };
+use crate::gc::{self, Gc, LambdaData};
 
 // ——————————————————————————— вычислитель ———————————————————————————
 
@@ -79,11 +79,11 @@ fn eval_inner(expr: &Value, env: Gc, depth: usize) -> Result<Value, String> {
                                         env,
                                         &name,
                                         Value::Lambda(gc::alloc_lambda(LambdaData {
-                                             params,
-                                             rest,
-                                             body: items[2..].to_vec(),
-                                             env,
-                                             is_macro: false,
+                                            params,
+                                            rest,
+                                            body: items[2..].to_vec(),
+                                            env,
+                                            is_macro: false,
                                         })),
                                     );
                                 }

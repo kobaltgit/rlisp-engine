@@ -1,8 +1,8 @@
 // src/audio/device.rs — Native Audio Device (WinMM на Windows, Silent fallback на других ОС).
 
+use super::mixer::AudioMixer;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use super::mixer::AudioMixer;
 
 pub struct NativeAudioDevice {
     _running: Arc<AtomicBool>,

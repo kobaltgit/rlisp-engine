@@ -4,10 +4,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::gc;
-use crate::interp::Value;
 use super::compiler::compile;
 use super::emit;
+use crate::gc;
+use crate::interp::Value;
 
 /// Скомпилированная функция: машинный код + метаданные.
 pub struct JitFn {

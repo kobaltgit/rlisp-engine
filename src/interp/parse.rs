@@ -1,7 +1,7 @@
 // src/interp/parse.rs — Синтаксический анализ Lisp (скалярный и SIMD-парсеры, лексеры).
 
-use crate::simd;
 use super::{is_sym, vec_into_chain, Value};
+use crate::simd;
 
 // ——————————————————————————— парсер (Reader) ———————————————————————————
 
@@ -12,7 +12,7 @@ use super::{is_sym, vec_into_chain, Value};
 pub fn parse_program(src: &str) -> Result<Vec<Value>, String> {
     #[cfg(target_arch = "x86_64")]
     {
-        return parse_program_simd(src);
+        parse_program_simd(src)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -51,7 +51,7 @@ pub fn parse_program_simd(src: &str) -> Result<Vec<Value>, String> {
         if pos >= bytes.len() {
             break;
         }
-        out.push(parse_expr_b(src, bytes, &mut pos)?);
+        out.push(parse_expr_b(bytes, &mut pos)?);
     }
     Ok(out)
 }
@@ -122,7 +122,7 @@ fn atom_end_b(bytes: &[u8], mut pos: usize) -> usize {
     }
 }
 
-fn parse_expr_b(src: &str, bytes: &[u8], pos: &mut usize) -> Result<Value, String> {
+fn parse_expr_b(bytes: &[u8], pos: &mut usize) -> Result<Value, String> {
     *pos = skip_ws_b(bytes, *pos);
     if *pos >= bytes.len() {
         return Err("неожиданный конец файла".into());
@@ -143,7 +143,7 @@ fn parse_expr_b(src: &str, bytes: &[u8], pos: &mut usize) -> Result<Value, Strin
                     *pos += 1;
                     break;
                 }
-                let item = parse_expr_b(src, bytes, pos)?;
+                let item = parse_expr_b(bytes, pos)?;
                 // точечная пара: (a . b) — Этап 2
                 if is_sym(&item, ".") {
                     if items.is_empty() {
@@ -152,7 +152,7 @@ fn parse_expr_b(src: &str, bytes: &[u8], pos: &mut usize) -> Result<Value, Strin
                     if tail.is_some() {
                         return Err("лишний «.» в списке".into());
                     }
-                    tail = Some(parse_expr_b(src, bytes, pos)?);
+                    tail = Some(parse_expr_b(bytes, pos)?);
                     *pos = skip_ws_b(bytes, *pos);
                     if *pos >= bytes.len() || bytes[*pos] != close {
                         return Err("после «.» — один элемент и закрывающая скобка".into());
@@ -170,22 +170,22 @@ fn parse_expr_b(src: &str, bytes: &[u8], pos: &mut usize) -> Result<Value, Strin
         b')' | b']' => Err("неожиданная закрывающая скобка".into()),
         b'\'' => {
             *pos += 1;
-            let e = parse_expr_b(src, bytes, pos)?;
+            let e = parse_expr_b(bytes, pos)?;
             Ok(Value::List(vec![Value::Sym("quote".into()), e]))
         }
         b'`' => {
             *pos += 1;
-            let e = parse_expr_b(src, bytes, pos)?;
+            let e = parse_expr_b(bytes, pos)?;
             Ok(Value::List(vec![Value::Sym("quasiquote".into()), e]))
         }
         b',' => {
             *pos += 1;
             if *pos < bytes.len() && bytes[*pos] == b'@' {
                 *pos += 1;
-                let e = parse_expr_b(src, bytes, pos)?;
+                let e = parse_expr_b(bytes, pos)?;
                 Ok(Value::List(vec![Value::Sym("unquote-splicing".into()), e]))
             } else {
-                let e = parse_expr_b(src, bytes, pos)?;
+                let e = parse_expr_b(bytes, pos)?;
                 Ok(Value::List(vec![Value::Sym("unquote".into()), e]))
             }
         }

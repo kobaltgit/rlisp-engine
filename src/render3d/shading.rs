@@ -1,7 +1,7 @@
 // src/render3d/shading.rs — Чистая математика затенения, освещения и теней.
 
-use crate::interp::{need_args, num_val, Value};
 use super::types::{PointLight, R3};
+use crate::interp::{need_args, num_val, Value};
 
 #[inline]
 pub(crate) fn col(x: f64) -> u8 {

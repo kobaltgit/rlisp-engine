@@ -2,10 +2,10 @@
 
 pub mod tex;
 pub mod transparent;
-pub(crate) use tex::*;
-pub(crate) use transparent::*;
 use super::shading::*;
 use super::types::*;
+pub(crate) use tex::*;
+pub(crate) use transparent::*;
 
 #[allow(dead_code)]
 pub(crate) type RasterPoint = Vtx;
@@ -14,9 +14,9 @@ pub(crate) type AlphaTri = TransTri;
 #[allow(unused_imports)]
 pub(crate) use super::shading::clip_near6 as clip_poly;
 #[allow(unused_imports)]
-pub(crate) use transparent::flush_transparent as flush_alpha;
-#[allow(unused_imports)]
 pub(crate) use raster_tris as raster_poly;
+#[allow(unused_imports)]
+pub(crate) use transparent::flush_transparent as flush_alpha;
 
 pub(crate) fn raster_shadow_tris(r3: &mut R3, clip: &[f32], idx: &[f32]) -> Result<u64, String> {
     let sw = r3.shadow_w;
@@ -184,8 +184,6 @@ pub(crate) enum Prim {
     Tri,
     Wire,
 }
-
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn raster_tris(

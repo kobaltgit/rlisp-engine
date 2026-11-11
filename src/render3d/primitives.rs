@@ -1,8 +1,8 @@
 // src/render3d/primitives.rs — Высокоуровневая отрисовка примитивов (сетки, каркасы, батчи).
 
-use crate::hal::Hal;
 use super::raster::*;
 use super::shading::*;
+use crate::hal::Hal;
 
 /// T&L: world = M_model · v, clip = M_mvp · world
 /// (UV-атрибуты интерполируются отдельно — см. raster_tris/uvq).

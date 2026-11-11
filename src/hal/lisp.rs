@@ -2,9 +2,7 @@
 
 use super::core::{ascii_frame, base64_decode, f2b, mem_block, str_val, to_rgb, Hal};
 use super::types::{OutputMode, Tex};
-use crate::interp::{
-    env_define, int_val, load_file, need_args, num_val, resolve_path, Gc, Value,
-};
+use crate::interp::{env_define, int_val, load_file, need_args, num_val, resolve_path, Gc, Value};
 use crate::png;
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -1,7 +1,7 @@
 // src/render3d/raster/tex.rs — Семплинг текстур, билинейная/nearest фильтрация и мипмаппинг.
 
-use crate::hal::{Hal, MipLevel};
 use super::super::types::{TexFilter, Vtx};
+use crate::hal::{Hal, MipLevel};
 
 #[derive(Clone)]
 pub(crate) struct TexRef {

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::interp::{env_define, fmt_value, need_args, num_val, Gc, Value};
 
-use super::kernels::{level_add, scalar, vadd, vmax, vmin, vmul, vsub, vdot};
+use super::kernels::{level_add, scalar, vadd, vdot, vmax, vmin, vmul, vsub};
 use super::types::{active_level, detect, level_name};
 
 // ——— бенчмарк ———
