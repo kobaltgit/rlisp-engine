@@ -140,6 +140,10 @@
           resize: none; outline: none; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; }
   #assets { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; flex: 0 0 auto; }
   #assets button { font-size: 11.5px; padding: 4px 9px; }
+  #hier-filter { margin: 6px 8px 2px; width: calc(100% - 16px); background: var(--panel2);
+                 border: 1px solid var(--edge); border-radius: 4px; color: var(--txt);
+                 font: inherit; font-size: 11.5px; padding: 4px 8px; outline: none; }
+  #hier-filter:focus { border-color: var(--acc); }
 
   /* ─── консоль ─── */
   #p-console { flex: 1.2; }
@@ -212,6 +216,7 @@
 <div id="main">
   <div class="col">
     <div class="panel-title">Иерархия</div>
+    <input id="hier-filter" placeholder="поиск по имени/типу…" autocomplete="off">
     <div class="panel-body" id="hier"></div>
     <div class="panel-title">Префабы <span class="hint">— перетащи на вид</span></div>
     <div class="panel-body" id="prefabs"></div>
@@ -242,6 +247,7 @@
       <span class="spacer"></span>
       <span id="vbar-focus-hint" class="vbar-hint">Кликните в экран для управления WASD / R</span>
       <button id="b-expand-view" class="vbtn" title="Развернуть/свернуть экран (F)">⛶ Развернуть</button>
+      <button id="b-shot" class="vbtn" title="Скачать текущий кадр как PNG">📷 PNG</button>
     </div>
     <div id="viewport">
       <div id="viewbox">
@@ -424,6 +430,24 @@ function toast(text, cls) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.style.display = "none"; }, 4000);
 }
+
+/* ───────────────────────── скриншот кадра + поиск по иерархии ───────────────────────── */
+$("b-shot").addEventListener("click", async () => {
+  try {
+    const r = await fetch("/frame.png");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const b = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "rlisp-editor-" + Date.now() + ".png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast("кадр сохранён: " + a.download);
+  } catch (e) {
+    toast("не удалось снять кадр: " + e.message, "warn");
+  }
+});
+$("hier-filter").addEventListener("input", () => { lastSig = null; renderHier(); });
 
 /* ───────────────────────── математика: та же проекция, что в render3d.lisp ───────────────────────── */
 function v3sub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
@@ -799,12 +823,19 @@ function syncSelected() { selected = scene.find(e => entKey(e) === selKey) || se
 
 function renderHier() {
   const h = $("hier");
-  const sig = sceneSig();
+  const q = ($("hier-filter").value || "").trim().toLowerCase();
+  const sig = sceneSig() + "@" + q;
   if (sig !== lastSig) {
     lastSig = sig;
     h.innerHTML = "";
     const groups = {};
-    for (const e of scene) (groups[e.type] = groups[e.type] || []).push(e);
+    for (const e of scene) {
+      if (q) {
+        const hay = ((e.name ? e.name : e.type + " #" + e.id) + " " + e.type).toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      (groups[e.type] = groups[e.type] || []).push(e);
+    }
     for (const type of Object.keys(groups).sort()) {
       const g = document.createElement("div");
       g.className = "grp"; g.textContent = type + "  ·  " + groups[type].length;

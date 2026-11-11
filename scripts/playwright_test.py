@@ -4,7 +4,10 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-HTML = "file:///home/z/my-project/work/portfolio/rlisp-engine/docs/playground.html"
+import os
+HTML = "file://" + os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "docs", "playground.html")
 
 with sync_playwright() as p:
     b = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
@@ -172,6 +175,35 @@ with sync_playwright() as p:
     assert px3[1] > 30000, "канвас ШТОЛЬНИ пуст"
     assert px3[0] > 400, "фонарь не светит"
     print("ШТОЛЬНЯ playwright: ok")
+
+    # ——— v0.17: шаринг сцены через URL-хеш + PNG-экспорт ———
+    pg.click("#share")
+    pg.wait_for_timeout(300)
+    assert "#code=" in pg.url, "шаринг не записал #code в URL"
+    con_last = pg.text_content("#console div:last-child")
+    assert "ссылка" in con_last, f"нет подсказки о ссылке: {con_last[:60]}"
+    print("шаринг:", con_last[:70])
+    # перезагрузка страницы: сцена из ссылки должна подхватиться сама
+    pg.reload()
+    pg.wait_for_timeout(900)
+    con_last = pg.text_content("#console div:last-child")
+    assert "из ссылки" in con_last, f"сцена из ссылки не загрузилась: {con_last[:70]}"
+    assert "Сцена из ссылки" in pg.text_content("#preset option:checked"), "пресет-из-ссылки не выбран"
+    print("сцена из ссылки: ok")
+    # PNG-кнопка: клик не должен ронять страницу (toBlob → download).
+    # Trusted-клик после длинного прогона бывает съеден фокус-танцами
+    # headless — fallback: element.click() через evaluate.
+    pg.click("#shot")
+    pg.wait_for_timeout(500)
+    con_shot = pg.text_content("#console div:last-child")
+    if "кадр сохранён" not in con_shot:
+        pg.evaluate("document.getElementById('shot').click()")
+        pg.wait_for_timeout(500)
+        con_shot = pg.text_content("#console div:last-child")
+    assert "кадр сохранён" in con_shot, f"PNG не сохранился: {con_shot[:60]}"
+    print("PNG-экспорт:", con_shot)
+    errs_new = [e for e in errors if "favicon" not in e]
+    assert not errs_new, f"JS-ошибки на новых кнопках: {errs_new[:3]}"
 
     b.close()
 

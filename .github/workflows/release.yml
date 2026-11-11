@@ -8,37 +8,99 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # нативные сборки: три платформы, у каждой свой пакет
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  plat: linux-x64,     pack: tar }
+          - { os: windows-latest, plat: windows-x64,   pack: zip }
+          - { os: macos-latest,   plat: macos-aarch64, pack: tar }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Тесты (релиз не выходит красным)
+        run: cargo test --release
+      - name: Нативный бинарник
+        run: cargo build --release
+      # GITHUB_REF_NAME у тега уже с «v» — ${GITHUB_REF_NAME#v} снимает её,
+      # иначе имена файлов получаются с «vv»
+      - name: Пакет (unix)
+        if: matrix.pack == 'tar'
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/rlisp-engine-$VER
+          cp target/release/rlisp-engine dist/rlisp-engine-$VER/
+          cp -r assets/lisp dist/rlisp-engine-$VER/lisp
+          cp -r assets/editor dist/rlisp-engine-$VER/editor
+          cp README.md CHANGELOG.md RELEASE_NOTES.md LIMITATIONS.md dist/rlisp-engine-$VER/
+          tar -czf dist/rlisp-engine-v$VER-${{ matrix.plat }}.tar.gz -C dist rlisp-engine-$VER
+      - name: Пакет (windows)
+        if: matrix.pack == 'zip'
+        shell: pwsh
+        run: |
+          $VER = $env:GITHUB_REF_NAME.Substring(1)
+          New-Item -ItemType Directory -Force -Path "dist/rlisp-engine-$VER" | Out-Null
+          Copy-Item target/release/rlisp-engine.exe "dist/rlisp-engine-$VER/"
+          Copy-Item -Recurse assets/lisp "dist/rlisp-engine-$VER/lisp"
+          Copy-Item -Recurse assets/editor "dist/rlisp-engine-$VER/editor"
+          Copy-Item README.md,CHANGELOG.md,RELEASE_NOTES.md,LIMITATIONS.md "dist/rlisp-engine-$VER/"
+          Compress-Archive -Path "dist/rlisp-engine-$VER" -DestinationPath "dist/rlisp-engine-v$VER-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.plat }}
+          path: dist/rlisp-engine-v*-*.*
+
+  # wasm + песочница одним файлом
+  web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - name: Тесты (релиз не выходит красным)
+      - name: Тесты
         run: cargo test --release
-      - name: Нативный бинарник
-        run: cargo build --release
       - name: WASM
         run: cargo build --release --target wasm32-unknown-unknown
       - name: Смоук wasm
         run: node scripts/wasm_smoke.js target/wasm32-unknown-unknown/release/rlisp-engine.wasm assets/lisp/main_physpoly.lisp 30
-      - name: Пакет нативного бинарника
+      - name: Песочница (template + wasm base64 + пресеты)
+        run: python3 scripts/build_playground.py
+      - name: плоско в dist (upload-artifact режет по общему предку)
         run: |
-          mkdir -p dist/rlisp-engine-linux-x64
-          cp target/release/rlisp-engine dist/rlisp-engine-linux-x64/
-          cp -r assets/lisp dist/rlisp-engine-linux-x64/lisp
-          cp README.md CHANGELOG.md LIMITATIONS.md dist/rlisp-engine-linux-x64/
-          tar -czf dist/rlisp-engine-v${GITHUB_REF_NAME}-linux-x64.tar.gz -C dist rlisp-engine-linux-x64
-      - name: Собрать dist
-        run: |
+          mkdir -p dist
           cp target/wasm32-unknown-unknown/release/rlisp-engine.wasm dist/
-          cp docs/playground.html dist/rlisp_playground.html
+          cp docs/playground.html dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-web
+          path: dist/
+
+  # публикация: все пакеты одного релиза
+  release:
+    needs: [native, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: переименовать wasm/песочницу с версией
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mv dist/rlisp-engine.wasm dist/rlisp-engine-v$VER.wasm
+          mv dist/playground.html dist/rlisp_playground_v$VER.html
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/rlisp-engine-v*-linux-x64.tar.gz
-            dist/rlisp-engine.wasm
-            dist/rlisp_playground.html
+            dist/rlisp-engine-v*-windows-x64.zip
+            dist/rlisp-engine-v*-macos-aarch64.tar.gz
+            dist/rlisp-engine-v*.wasm
+            dist/rlisp_playground_v*.html
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true

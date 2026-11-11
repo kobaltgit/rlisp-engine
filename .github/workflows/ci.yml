@@ -49,6 +49,20 @@ jobs:
       - run: cargo build --release
       - run: cargo test
 
+  cross:
+    name: cross (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: cargo test --release
+
   wgpu:
     name: wgpu feature (check + test)
     runs-on: ubuntu-latest
