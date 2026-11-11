@@ -28,16 +28,18 @@ balls = grab("Мячи и трамплин (мини-сцена)", old)
 tpl2d = grab("Только 2D (шаблон)", old)
 phys = json.dumps(open(f"{REPO}/assets/lisp/main_physpoly.lisp").read())
 oasis = json.dumps(open(f"{REPO}/assets/lisp/main_oasis.lisp").read())
+shtolnya = json.dumps(open(f"{REPO}/assets/lisp/main_shtolnya.lisp").read())
 
 wasm_b64 = base64.b64encode(open(WASM, "rb").read()).decode()
 
 html = tmpl
 html = html.replace("__WASM_B64__", wasm_b64)
+html = html.replace("__PRESET_SHTOLNYA__", shtolnya)
 html = html.replace("__PRESET_OASIS__", oasis)
 html = html.replace("__PRESET_PHYSPOLY__", phys)
 html = html.replace("__PRESET_BALLS__", balls)
 html = html.replace("__PRESET_2D__", tpl2d)
-leftover = [t for t in ("__WASM_B64__", "__PRESET_OASIS__", "__PRESET_PHYSPOLY__", "__PRESET_BALLS__", "__PRESET_2D__") if t in html]
+leftover = [t for t in ("__WASM_B64__", "__PRESET_SHTOLNYA__", "__PRESET_OASIS__", "__PRESET_PHYSPOLY__", "__PRESET_BALLS__", "__PRESET_2D__") if t in html]
 assert not leftover, "незаменённые плейсхолдеры: %s" % leftover
 
 open(OUT, "w").write(html)

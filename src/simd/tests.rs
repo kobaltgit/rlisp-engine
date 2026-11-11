@@ -11,11 +11,18 @@ use std::rc::Rc;
 #[test]
 fn test_simd_level_and_detect() {
     let lvl = detect();
-    let name = level_name(lvl);
-    assert!(!name.is_empty());
+    assert!(!level_name(lvl).is_empty());
 
-    let act = active_level();
-    assert_eq!(lvl, act);
+    // контракт OnceLock: active_level() отдаёт уровень, записанный ПЕРВЫМ
+    // инициатором — это либо detect() (без калибровки), либо calibrate(),
+    // если та уже отработала в параллельном тесте (общая статика процесса).
+    // calibrate() сам пишет в ACTIVE, поэтому после него равенство
+    // гарантировано детерминированно; сравнивать active с detect напрямую
+    // нельзя — на машинах, где замер калибровки выбрал не самый «старший»
+    // уровень, тест становится зависимым от порядка тестов.
+    let cal = calibrate();
+    let act2 = active_level();
+    assert_eq!(cal, act2, "после калибровки active обязан совпасть с ней");
 }
 
 #[test]

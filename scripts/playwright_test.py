@@ -134,6 +134,46 @@ with sync_playwright() as p:
     assert px2[1] > 50000, "канвас ОАЗИС пуст"
     print("ОАЗИС playwright: ok")
 
+
+    # ——— ШТОЛЬНЯ: хоррор-пресет, старт, фонарь ———
+    pg.select_option("#preset", "ШТОЛЬНЯ (хоррор: фонарь, монстр)")
+    pg.click("#run")
+    status3 = ""
+    for _ in range(40):
+        pg.wait_for_timeout(500)
+        status3 = pg.text_content("#status") or ""
+        if "fps" in status3:
+            break
+    print("штольня статус:", status3)
+    assert "fps" in status3, "ШТОЛЬНЯ не стартовала"
+    pg.focus("body")
+    pg.keyboard.press("w")   # старт
+    pg.wait_for_timeout(900)
+    pg.keyboard.down("w")
+    pg.wait_for_timeout(700)
+    pg.keyboard.up("w")
+    pg.keyboard.down("a")
+    pg.wait_for_timeout(500)
+    pg.keyboard.up("a")
+    pg.wait_for_timeout(600)
+    errs_sht = [e for e in errors if "shtol" in e.lower() or "штольн" in e.lower()]
+    assert not errs_sht, f"ошибки ШТОЛЬНИ: {errs_sht[:3]}"
+    px3 = pg.evaluate("""() => {
+        const c = document.getElementById('screen');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let bright = 0, nonempty = 0;
+        for (let i = 0; i < d.length; i += 4) {
+            if (d[i] | d[i+1] | d[i+2]) nonempty++;
+            if (d[i] > 200 && d[i+1] > 180) bright++;
+        }
+        return [bright, nonempty];
+    }""")
+    print("штольня канвас: светлых", px3[0], "непустых", px3[1])
+    assert px3[1] > 30000, "канвас ШТОЛЬНИ пуст"
+    assert px3[0] > 400, "фонарь не светит"
+    print("ШТОЛЬНЯ playwright: ok")
+
     b.close()
+
 
     print("ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")

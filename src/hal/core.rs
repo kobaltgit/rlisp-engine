@@ -137,6 +137,89 @@ impl Hal {
         }
     }
 
+    /// gpu-fill-rect-a: заливка с альфа-блендингом (a 0..1: 0 — не трогаем,
+    /// 1 — как fill_rect). Software-растр; в wgpu-режиме рисуется в fb
+    /// оверлеев отложенного 2D-слоя.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_rect_a(&mut self, x: i64, y: i64, w: i64, h: i64, r: u8, g: u8, b: u8, a: f32) {
+        if a <= 0.0 {
+            return;
+        }
+        if a >= 1.0 {
+            self.fill_rect(x, y, w, h, r, g, b);
+            return;
+        }
+        let x0 = (x.max(0) as usize).min(self.w);
+        let y0 = (y.max(0) as usize).min(self.h);
+        let x1 = ((x + w).max(0) as usize).min(self.w);
+        let y1 = ((y + h).max(0) as usize).min(self.h);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let af = a.clamp(0.0, 1.0);
+        for yy in y0..y1 {
+            let row = yy * self.w;
+            for xx in x0..x1 {
+                let p = (row + xx) * 4;
+                let blend = |src: u8, c: u8| -> u8 {
+                    (src as f32 * (1.0 - af) + c as f32 * af)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                };
+                self.fb[p] = blend(self.fb[p], r);
+                self.fb[p + 1] = blend(self.fb[p + 1], g);
+                self.fb[p + 2] = blend(self.fb[p + 2], b);
+                self.fb[p + 3] = 255;
+            }
+        }
+    }
+
+    /// gpu-light-spot: аддитивный экранный свет — радиальный градиент
+    /// (фонарь, лампа, вспышка, взрыв). Спад (1−d²/r²) — гладкий к нулю
+    /// на краю; интенсивность 1.0 ≈ +255 в центре.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spot_light(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        intensity: f32,
+        r: u8,
+        g: u8,
+        b: u8,
+    ) {
+        if radius <= 0.0 || intensity <= 0.0 {
+            return;
+        }
+        let x0 = ((cx - radius).floor().max(0.0) as usize).min(self.w);
+        let y0 = ((cy - radius).floor().max(0.0) as usize).min(self.h);
+        let x1 = ((cx + radius).ceil().min(self.w as f32) as usize).min(self.w);
+        let y1 = ((cy + radius).ceil().min(self.h as f32) as usize).min(self.h);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let rad2 = radius * radius;
+        for yy in y0..y1 {
+            let row = yy * self.w;
+            for xx in x0..x1 {
+                let dx = xx as f32 - cx;
+                let dy = yy as f32 - cy;
+                let d2 = dx * dx + dy * dy;
+                if d2 >= rad2 {
+                    continue;
+                }
+                let fall = 1.0 - d2 / rad2; // гладкий спад к нулю на краю
+                let k = fall * fall * intensity;
+                let p = (row + xx) * 4;
+                let add = |src: u8, c: u8| -> u8 { (src as f32 + c as f32 * k).min(255.0) as u8 };
+                self.fb[p] = add(self.fb[p], r);
+                self.fb[p + 1] = add(self.fb[p + 1], g);
+                self.fb[p + 2] = add(self.fb[p + 2], b);
+                self.fb[p + 3] = 255;
+            }
+        }
+    }
+
     /// gpu-blit: RGBA-пиксели 1:1, alpha=0 пропускается
     pub fn blit(&mut self, x: i64, y: i64, w: usize, h: usize, bytes: &[u8]) -> Result<(), String> {
         if let Backend::Wgpu(gpu) = &mut self.backend {

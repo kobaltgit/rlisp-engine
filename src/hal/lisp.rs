@@ -61,6 +61,34 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         Ok(Value::Nil)
     });
     let h = hal.clone();
+    def(env, "gpu-fill-rect-a", move |args| {
+        need(args, 8)?;
+        let x = num_val(&args[0])? as i64;
+        let y = num_val(&args[1])? as i64;
+        let w = num_val(&args[2])? as i64;
+        let hh = num_val(&args[3])? as i64;
+        let r = f2b(num_val(&args[4])?);
+        let g = f2b(num_val(&args[5])?);
+        let b = f2b(num_val(&args[6])?);
+        let a = num_val(&args[7])? as f32;
+        h.borrow_mut().fill_rect_a(x, y, w, hh, r, g, b, a);
+        Ok(Value::Nil)
+    });
+    let h = hal.clone();
+    def(env, "gpu-light-spot", move |args| {
+        need(args, 7)?;
+        let cx = num_val(&args[0])? as f32;
+        let cy = num_val(&args[1])? as f32;
+        let radius = num_val(&args[2])? as f32;
+        let intensity = num_val(&args[3])? as f32;
+        let r = f2b(num_val(&args[4])?);
+        let g = f2b(num_val(&args[5])?);
+        let b = f2b(num_val(&args[6])?);
+        h.borrow_mut()
+            .spot_light(cx, cy, radius, intensity, r, g, b);
+        Ok(Value::Nil)
+    });
+    let h = hal.clone();
     def(env, "gpu-blit", move |args| {
         need(args, 5)?;
         let x = num_val(&args[0])? as i64;
