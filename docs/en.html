@@ -170,7 +170,7 @@
     </p>
     <div class="hero-cta">
       <a class="btn btn-main" href="playground.html">Play in the browser — no build step</a>
-      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Download v0.15.0</a>
+      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Download v0.16.0</a>
       <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine">GitHub →</a>
     </div>
     <div class="hero-gif">
@@ -300,6 +300,29 @@
   </div>
 </section>
 
+<section id="shtolnya">
+  <div class="wrap">
+    <h2>“SHTOLNYA” <span class="tag">stage 25: light, darkness and fear — in Lisp</span></h2>
+    <p class="lead">First-person horror: a 13×14 mine maze (connectivity verified with BFS at design time), a flashlight with a battery, a stalker monster, 8 notes and an exit. Two new natives — <b>gpu-light-spot</b> (screen-space additive light) and <b>gpu-fill-rect-a</b> (alpha fill) — provide the flashlight, flashes, static and darkness; everything else is 660 lines of Lisp over the existing natives. The sound is fully procedural: a drone, a heartbeat driven by the monster distance, a screamer, footsteps.</p>
+    <div class="demos">
+      <div class="demo"><img src="img/shtolnya.gif" alt="Shtolnya gameplay" loading="lazy">
+        <div class="cap"><b>Gameplay to the end</b>W/S move · A/D turn · F flashlight · E battery · SPACE take note. The monster creeps up out of view, freezes under your gaze, lunges — “ON NASHEL TEBYA” (it found you).</div></div>
+      <div class="demo"><img src="img/shtolnya_still1.png" alt="Shtolnya flashlight" loading="lazy">
+        <div class="cap"><b>Light and darkness</b>the flashlight is two additive spots over an alpha-dark layer; notes and the monster mask glow through a Lisp projection of world points onto the screen.</div></div>
+    </div>
+    <div class="tbl-card">
+      <table>
+        <tr><th>Mechanic</th><th>How it works</th></tr>
+        <tr><td><b>Flashlight</b></td><td>battery 100 → 1.35/s, replace (E, spares), flicker &lt;25%, on/off (F) — save it</td></tr>
+        <tr><td><b>Monster</b></td><td>chases out of view (1.4–1.8 m/s), teleports strictly closer, staring → static and shake, lunge → screamer</td></tr>
+        <tr><td><b>Static</b></td><td>stripes + grain grow with the time you stare at the mask; the vignette “breathes” with proximity</td></tr>
+        <tr><td><b>Sound</b></td><td>sound-synth: drone (sine 44 Hz), heartbeat (52 Hz, tempo from distance), screamer (saw + slide), footsteps (noise)</td></tr>
+        <tr><td><b>Maze</b></td><td>walls — one instanced batch of cubes, pit props — another; floor/ceiling as a grid (huge triangles cause affine artifacts)</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
 <section id="bench">
   <div class="wrap">
     <h2>Benchmarks <span class="tag">honest methodology</span></h2>
@@ -338,7 +361,7 @@
   <div class="wrap">
     <h2>Try it</h2>
     <div class="cards">
-      <div class="card"><h3>In the browser</h3><p><a href="playground.html">The sandbox (playground.html)</a> — the whole engine in WASM: a Lisp editor, REPL, scene presets (including the playable “OASIS” FPS with the fox model baked in), sound. Opens as a file, zero network.</p></div>
+      <div class="card"><h3>In the browser</h3><p><a href="playground.html">The sandbox (playground.html)</a> — the whole engine in WASM: a Lisp editor, REPL, scene presets (playable “OASIS” and the “SHTOLNYA” horror), sound. Opens as a file, zero network.</p></div>
       <div class="card"><h3>Natively</h3><p><code style="font-family:var(--mono);font-size:13px">tar -xzf rlisp-engine-v*.tar.gz && ./rlisp-engine --script lisp/main_physpoly.lisp</code> — a binary + scenes + documentation.</p></div>
       <div class="card"><h3>From source</h3><p><code style="font-family:var(--mono);font-size:13px">cargo run --release -- --script assets/lisp/main_physpoly.lisp --capture demo/frames --every 6 --frames 240 --fast</code> — build and shoot a demo.</p></div>
     </div>

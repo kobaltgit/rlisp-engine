@@ -170,7 +170,7 @@
     </p>
     <div class="hero-cta">
       <a class="btn btn-main" href="playground.html">Играть в браузере — без сборки</a>
-      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Скачать v0.15.0</a>
+      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Скачать v0.16.0</a>
       <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine">GitHub →</a>
     </div>
     <div class="hero-gif">
@@ -235,6 +235,8 @@
         <div class="cap"><b>«Физполигон»</b>кокосы на NGS-физике: качение по склону без накачки энергии, вода гасит спин, брызги и рябь.</div></div>
       <div class="demo"><img src="img/oasis_filmstrip.png" alt="Операция Оазис кадры" loading="lazy">
         <div class="cap"><b>«ОПЕРАЦИЯ ОАЗИС»</b>играбельный FPS: волны скиннед лис (модель из сети, CC0), стрельба с трассерами, вью-модель автомата, звук. Весь геймплей — Lisp.</div></div>
+      <div class="demo"><img src="img/shtolnya_filmstrip.png" alt="Штольня кадры" loading="lazy">
+        <div class="cap"><b>«ШТОЛЬНЯ»</b>хоррор от первого лица: фонарь с батареей, монстр-сталкер, помехи при взгляде на маску, скример, звук на синтезе. Весь геймплей — Lisp.</div></div>
     </div>
   </div>
 </section>
@@ -301,6 +303,29 @@
   </div>
 </section>
 
+<section id="shtolnya">
+  <div class="wrap">
+    <h2>«ШТОЛЬНЯ» <span class="tag">этап 25: свет, тьма и страх — на Lisp</span></h2>
+    <p class="lead">Хоррор от первого лица: лабиринт-штольня 13×14 (связность проверена BFS при дизайне), фонарь с батареей, монстр-сталкер, 8 записок и выход. Два новых натива — <b>gpu-light-spot</b> (экранный аддитивный свет) и <b>gpu-fill-rect-a</b> (альфа-заливка) — дают фонарь, вспышки, помехи и тьму; всё остальное — 660 строк Lisp поверх существующих нативов. Звук целиком процедурный: гул, сердцебиение от дистанции до монстра, скример, шаги.</p>
+    <div class="demos">
+      <div class="demo"><img src="img/shtolnya.gif" alt="Штольня геймплей" loading="lazy">
+        <div class="cap"><b>Геймплей до конца</b>W/S шаг · A/D повороты · F фонарь · E батарейка · SPACE записка. Монстр подползает вне взгляда, замирает под ним, рвётся — «ON NASHEL TEBYA».</div></div>
+      <div class="demo"><img src="img/shtolnya_still1.png" alt="Штольня фонарь" loading="lazy">
+        <div class="cap"><b>Свет и тьма</b>фонарь — два аддитивных пятна поверх альфа-тьмы; записки и маска монстра светятся в темноте через Lisp-проекцию мировых точек на экран.</div></div>
+    </div>
+    <div class="tbl-card">
+      <table>
+        <tr><th>Механика</th><th>Как устроено</th></tr>
+        <tr><td><b>Фонарь</b></td><td>батарея 100 → 1.35/с, замена (E, запас), мерцание &lt;25%, вкл/выкл (F) — экономия</td></tr>
+        <tr><td><b>Монстр</b></td><td>преследование вне взгляда (1.4–1.8 м/с), телепорт строго ближе, замер при взгляде → помехи и дрожь, рывок → скример</td></tr>
+        <tr><td><b>Помехи</b></td><td>полосы + зерно растут от времени взгляда на маску; виньетка «дышит» с близостью монстра</td></tr>
+        <tr><td><b>Звук</b></td><td>sound-synth: гул (sine 44 Гц), сердце (52 Гц, темп от дистанции), скример (saw + slide), шаги (noise)</td></tr>
+        <tr><td><b>Лабиринт</b></td><td>стены — один батч кубов, крепи — второй; пол/потолок сеткой (гигантские треугольники дают афинные артефакты)</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
 <section id="bench">
   <div class="wrap">
     <h2>Бенчмарки <span class="tag">честная методология</span></h2>
@@ -314,6 +339,7 @@
         <tr><td><b>Физика</b></td><td>«Физполигон», 400×300, headless</td><td><b>~29 fps</b> с частицами и скелетом</td></tr>
         <tr><td><b>Пост-обработка</b></td><td>bloom+плечо+виньетка+зерно, 400×300</td><td><b>~0.6 мс</b>/кадр (release)</td></tr>
         <tr><td><b>«ОАЗИС»</b> FPS</td><td>5 скиннед лис + оружие + пост, 400×300</td><td><b>~26 fps</b> headless / <b>24 fps</b> в песочнице</td></tr>
+        <tr><td><b>«ШТОЛЬНЯ»</b> хоррор</td><td>лабиринт + 2D-свет/тьма + пост, 400×300</td><td><b>~28 fps</b> headless / <b>23 fps</b> в песочнице</td></tr>
         <tr><td><b>WASM</b></td><td>песочница в Chromium</td><td><b>22 fps</b> физика / 52 fps 2D</td></tr>
       </table>
     </div>
@@ -340,7 +366,7 @@
   <div class="wrap">
     <h2>Попробовать</h2>
     <div class="cards">
-      <div class="card"><h3>В браузере</h3><p><a href="playground.html">Песочница (playground.html)</a> — весь движок в WASM: редактор Lisp, REPL, пресеты сцен (включая играбельный FPS «ОАЗИС» с вшитой моделью лисы), звук. Открывается как файл, ноль сети.</p></div>
+      <div class="card"><h3>В браузере</h3><p><a href="playground.html">Песочница (playground.html)</a> — весь движок в WASM: редактор Lisp, REPL, пресеты сцен (играбельные «ОАЗИС» и хоррор «ШТОЛЬНЯ»), звук. Открывается как файл, ноль сети.</p></div>
       <div class="card"><h3>Нативно</h3><p><code style="font-family:var(--mono);font-size:13px">tar -xzf rlisp-engine-v*.tar.gz && ./rlisp-engine --script lisp/main_physpoly.lisp</code> — бинарник + сцены + документация.</p></div>
       <div class="card"><h3>Из исходников</h3><p><code style="font-family:var(--mono);font-size:13px">cargo run --release -- --script assets/lisp/main_physpoly.lisp --capture demo/frames --every 6 --frames 240 --fast</code> — собрать и снять демо.</p></div>
     </div>
