@@ -346,8 +346,11 @@ const SYS_MMAP: i64 = 9;
 const SYS_MPROTECT: i64 = 10;
 #[cfg(target_os = "linux")]
 const SYS_MUNMAP: i64 = 11;
+#[cfg(target_os = "linux")]
 const PROT_READ_WRITE: i64 = 0x3;
+#[cfg(target_os = "linux")]
 const PROT_READ_EXEC: i64 = 0x5;
+#[cfg(target_os = "linux")]
 const MAP_PRIVATE_ANON: i64 = 0x02 | 0x20;
 
 /// mmap(NULL, len, RW, MAP_PRIVATE|ANON) → адрес или None.
