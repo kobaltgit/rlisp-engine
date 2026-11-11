@@ -10,9 +10,7 @@ const MAX_LINES_LIMIT: usize = 800;
 
 // Список монолитов, находящихся в процессе поэтапной декомпозиции (по мере рефакторинга
 // файлы удаляются из этого списка, пока список не станет пустым):
-const PENDING_REFACTORING: &[&str] = &[
-    "src/gpu_3d.rs",
-];
+const PENDING_REFACTORING: &[&str] = &[];
 
 fn count_lines(path: &Path) -> usize {
     let content = fs::read_to_string(path).unwrap_or_default();
