@@ -291,6 +291,7 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
     let use_fixed = args.fast || args.capture.is_some() || args.input.is_some();
     let mut sim_time = 0f64;
     let mut ev_i = 0usize;
+    let mut stdin_held: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut frames: u64 = 0;
     let mut reloads: u64 = 0;
     let mut quit = false;
@@ -313,6 +314,21 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
             halrc.borrow_mut().queue.push(events[ev_i].1.clone());
             ev_i += 1;
         }
+        // авто-release для stdin-нажатий (key-up там физически не приходит)
+        if !stdin_held.is_empty() {
+            let due: Vec<String> = stdin_held
+                .iter()
+                .filter(|(_, until)| **until <= frames)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in due {
+                stdin_held.remove(&k);
+                halrc.borrow_mut().queue.push(Value::List(vec![
+                    Value::Sym("key-up".into()),
+                    Value::Str(k),
+                ]));
+            }
+        }
         // ввод с клавиатуры
         if let Some(rx) = &rx {
             while let Ok(b) = rx.try_recv() {
@@ -322,8 +338,10 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
                         let k = (b as char).to_string();
                         halrc.borrow_mut().queue.push(Value::List(vec![
                             Value::Sym("key-down".into()),
-                            Value::Str(k),
+                            Value::Str(k.clone()),
                         ]));
+                        // stdin не отдаёт key-up: авто-release через 12 sim-кадров
+                        stdin_held.insert(k, frames + 12);
                     }
                     b'A'..=b'Z' => {
                         let k = (b as char).to_lowercase().to_string();

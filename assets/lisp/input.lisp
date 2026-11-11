@@ -1,7 +1,7 @@
 ;; input.lisp — Уровень 3: Input DSL (по ТЗ §5.6).
 ;; Обёртка над сырыми событиями input-poll: хранит состояние между кадрами.
 
-(define *keys* (make-table))         ; клавиша → time-now последнего нажатия
+(define *keys* (make-table))         ; клавиша → #t (держится) / #f (отпущена)
 (define *keys-pressed* (make-table)) ; клавиша → #t в кадре нажатия
 
 (define (process-events events)
@@ -9,19 +9,22 @@
    (lambda (ev)
      (let ((kind (car ev)) (key (cadr ev)))
        (cond ((eq? kind 'key-down)
-              (begin (table-set! *keys* key (time-now))
+              (begin (table-set! *keys* key #t)
                      (table-set! *keys-pressed* key #t)))
              ((eq? kind 'key-up)
-              (table-set! *keys* key -999.0))
+              (table-set! *keys* key #f))
              (else #f))))
    events))
 
 (define (poll-input)
   (process-events (input-poll)))
 
-;; клавиша «залипает» на 0.2с — тап в терминале ощущается как удержание
+;; удержание — чистое состояние: #t от key-down до key-up. Окна по времени
+;; (0.2с реального, потом 0.5с и 36 sim-кадров) обрывали удержание раньше
+;; key-up: в headless-прогоне sim_time идёт медленнее стенного, ходьба
+;; замирала. Авто-release для терминального режима делает runner.rs.
 (define (key-down? k)
-  (< (- (time-now) (table-get *keys* k -999.0)) 0.2))
+  (table-get *keys* k #f))
 
 (define (key-pressed? k)
   (table-get *keys-pressed* k #f))

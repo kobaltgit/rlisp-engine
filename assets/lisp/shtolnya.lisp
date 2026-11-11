@@ -34,7 +34,7 @@
 (define *game-t* 0.0)
 (define *px* 6.0)
 (define *pz* 6.0)
-(define *yaw* 2.35)
+(define *yaw* 2.03)
 (define *bob* 0.0)
 (define *shake* 0.0)
 (define *torch* #t)
@@ -63,17 +63,19 @@
 (define *battery-taken* (make-table))
 
 ;; записки: (cx cz ndx ndz) — мир и нормаль стены
+;; раскладка по BFS-дистанциям: 2 близко (3 кл), остальные 10..22 —
+;; равномерный прогресс и поучительный маршрут
 (define *page-spots* (list
-  (list 46.0 40.0 0.0 1.0)
-  (list 46.0 36.0 0.0 1.0)
-  (list 30.0 46.0 0.0 -1.0)
-  (list 46.0 32.0 0.0 1.0)
-  (list 30.0 50.0 1.0 0.0)
-  (list 46.0 28.0 0.0 1.0)
-  (list 34.0 50.0 1.0 0.0)
-  (list 42.0 28.0 0.0 -1.0)))
+  (list 14.0 10.0 1.0 0.0)   ; dist 3
+  (list 6.0 18.0 1.0 0.0)    ; dist 3
+  (list 6.0 22.0 -1.0 0.0)   ; dist 4
+  (list 30.0 6.0 0.0 -1.0)   ; dist 10
+  (list 46.0 14.0 1.0 0.0)   ; dist 16
+  (list 30.0 26.0 1.0 0.0)   ; dist 15
+  (list 10.0 50.0 0.0 -1.0)  ; dist 14
+  (list 38.0 46.0 1.0 0.0))) ; dist 22
 
-(define *battery-spots* (list (list 6.0 10.0) (list 34.0 14.0) (list 14.0 38.0) (list 42.0 22.0)))
+(define *battery-spots* (list (list 6.0 14.0) (list 6.0 38.0) (list 10.0 50.0) (list 38.0 22.0)))
 
 (define *lamps* (list
   (list 10.0 10.0 0.0)
@@ -161,8 +163,11 @@
             (let* ((wx (+ (* cx *cell*) 2.0))
                    (wz (+ (* cz *cell*) 2.0))
                    (dx (- wx *px*)) (dz (- wz *pz*))
-                   (d (sqrt (+ (* dx dx) (* dz dz)))))
-              (if (and (> d 5.5) (< d 14.0) (< d (- d0 1.0)))
+                   (d (sqrt (+ (* dx dx) (* dz dz))))
+                   (lookx (sin *yaw*)) (lookz (- 0 (cos *yaw*)))
+                   (dot (+ (* lookx (/ dx (max 0.01 d)))
+                           (* lookz (/ dz (max 0.01 d))))))
+              (if (and (> d 8.5) (< d 14.0) (< d (- d0 1.0)) (< dot 0.4))
                   (begin (set! *mx* wx) (set! *mz* wz) #t)
                   #f)))))
     (define (go k)
@@ -220,7 +225,7 @@
                (taken (table-get *page-taken* i #f))
                (dx (- (car spot) *px*)) (dz (- (cadr spot) *pz*))
                (d (sqrt (+ (* dx dx) (* dz dz)))))
-          (if (and (not taken) (< d 1.5))
+          (if (and (not taken) (< d 1.9))
               (set! *near-page* i)
               #f)
           (scan-pages (+ i 1)))))
@@ -232,7 +237,7 @@
                (taken (table-get *battery-taken* i #f))
                (dx (- (car spot) *px*)) (dz (- (cadr spot) *pz*))
                (d (sqrt (+ (* dx dx) (* dz dz)))))
-          (if (and (not taken) (< d 1.3) (< *batt* 55.0))
+          (if (and (not taken) (< d 1.7) (< *batt* 55.0))
               (begin (table-set! *battery-taken* i #t)
                      (set! *spare* (+ *spare* 1))
                      (play-sfx 'battery 0.8))
@@ -259,16 +264,18 @@
     ;; призрачное преследование: вне взгляда ползёт к игроку (1.1 м/с),
     ;; после 4 записок — быстрее; стены игнорирует (штольня помнит все ходы)
     (if (and (string=? *m-mode* "stalk") (> md 2.0))
-        (let* ((sp (if (>= *pages* 4) 1.8 1.4))
+        (let* ((sp (if (>= *pages* 4) 1.8 0.95))
                (nx (+ *mx* (* dirx sp dt)))
                (nz (+ *mz* (* dirz sp dt))))
           (set! *mx* nx)
           (set! *mz* nz))
         #f)
-    ;; долгий взгляд бесит монстра: рывок К ИГРОКУ (до 1.2 м — ближе смерть)
+    ;; долгий взгляд бесит монстра: рывок на 1.6 м К ИГРОКУ, но не ближе 2.4 м
+    ;; (смерть — только если «Он» реально догнал ползанием)
     (if (and (string=? *m-mode* "frozen") (> *m-see* 2.2))
-        (let* ((lx (- *mx* (* dirx (max 0.6 (- md 1.35)))))
-               (lz (- *mz* (* dirz (max 0.6 (- md 1.35))))))
+        (let* ((newd (max 2.4 (- md 1.6)))
+               (lx (+ *px* (* dirx newd)))
+               (lz (+ *pz* (* dirz newd))))
           (set! *mx* lx)
           (set! *mz* lz)
           (set! *m-see* 0.6)
@@ -276,7 +283,7 @@
           (play-sfx 'sting 0.8))
         #f)
     (set! *m-t* (+ *m-t* dt))
-    (let ((period (if (string=? *m-mode* "frozen") 3.4 (if (>= *pages* 4) 1.9 2.7))))
+    (let ((period (if (string=? *m-mode* "frozen") 3.4 (if (>= *pages* 4) 2.4 4.6))))
       (if (> *m-t* period)
           (begin (set! *m-t* 0.0)
                  (if (string=? *m-mode* "stalk")
@@ -299,9 +306,7 @@
   (set! *game-t* (+ *game-t* dt))
   (set! *flash* (max 0.0 (- *flash* (* 2.2 dt))))
   (set! *shake* (max 0.0 (- *shake* (* 3.0 dt))))
-  (set! *red* (if (string=? *state* "dead")
-                 (max 0.35 (- *red* (* 0.25 dt)))
-                 (max 0.0 (- *red* (* 0.8 dt)))))
+  (set! *red* (max 0.0 (- *red* (* 0.9 dt))))
   ;; интро: любой ход — старт
   (if (and (string=? *state* "intro")
            (or (key-pressed? "w") (key-pressed? " ")))
@@ -312,7 +317,7 @@
   ;; смерть/победа: R — рестарт
   (if (and (or (string=? *state* "dead") (string=? *state* "win")) (key-pressed? "r"))
       (begin (set! *state* "play")
-             (set! *px* 6.0) (set! *pz* 6.0) (set! *yaw* 2.35)
+             (set! *px* 6.0) (set! *pz* 6.0) (set! *yaw* 2.03)
              (set! *batt* 100.0) (set! *spare* 2) (set! *pages* 0)
              (set! *page-taken* (make-table))
              (set! *battery-taken* (make-table))
@@ -352,11 +357,13 @@
             #f)
         ;; подбор
         (update-pickups!)
-        (if (and *near-page* (key-pressed? " "))
+        (if (and *near-page* (or (key-pressed? " ") (key-pressed? "q")))
             (begin (table-set! *page-taken* *near-page* #t)
                    (set! *pages* (+ *pages* 1))
                    (set! *flash* 0.5)
-                   (play-sfx 'page 0.8))
+                   (play-sfx 'page 0.8)
+                   ;; «Он заметил»: после каждой записки телепорт ближе
+                   (set! *m-t* 99.0))
             #f)
         ;; монстр + сердцебиение + гул
         (let ((md (update-monster dt)))
@@ -394,8 +401,10 @@
                 (let ((row (nth *maze* z)))
                   (if (string=? (string-at row x) "#")
                       (begin
-                        (wall-push! (+ (* x *cell*) 2.0) 2.0 (+ (* z *cell*) 2.0)
-                                    4.0 0.0 0.34 0.32 0.30)
+                        (let* ((h (mod (+ (* x 7) (* z 13)) 5))
+                               (k (+ 0.38 (* 0.03 h))))
+                          (wall-push! (+ (* x *cell*) 2.0) 2.0 (+ (* z *cell*) 2.0)
+                                      4.0 0.0 k (- k 0.03) (- k 0.06)))
                         (go-x (+ x 1)))
                       (go-x (+ x 1))))))
           (go-x 0)
@@ -411,8 +420,9 @@
       (string-at row i)
       "."))
 
-;; сетка пола/потолка: вершины 0..52 × 0..56 с шагом клетки, y = yv
-(define (build-grid-mesh yv)
+;; сетка пола/потолка: чекер — два меша (чётные/нечётные клетки),
+;; чуть разный тон читается как плиты штольни и скрывает афинные артефакты
+(define (build-grid-mesh yv parity)
   (let ((pos '()) (idx '()) (vi 0))
     (define (go-z z)
       (if (> z 14)
@@ -427,7 +437,6 @@
             (go-x 0)
             (go-z (+ z 1)))))
     (go-z 0)
-    ;; индексы: клетка (x,z) → вершины в ряду z: (14 строк × 14 столбцов)
     (define (go-iz z)
       (if (>= z 14)
           #f
@@ -435,30 +444,38 @@
             (define (go-ix x)
               (if (>= x 13)
                   #f
-                  (let* ((a (+ (* z 14) x))
-                         (b (+ a 1))
-                         (c (+ a 14))
-                         (d (+ c 1)))
-                    (set! idx (append idx (list a c b  b c d)))
-                    (go-ix (+ x 1)))))
+                  (if (eq? (mod (+ x z) 2) parity)
+                      (let* ((a (+ (* z 14) x))
+                             (b (+ a 1))
+                             (c (+ a 14))
+                             (d (+ c 1)))
+                        (set! idx (append idx (list a c b  b c d)))
+                        (go-ix (+ x 1)))
+                      (go-ix (+ x 1)))))
             (go-ix 0)
             (go-iz (+ z 1)))))
     (go-iz 0)
     (mesh-make pos idx)))
 
 (define *floor-mesh* #f)
+(define *floor-mesh2* #f)
 (define *ceil-mesh* #f)
+(define *ceil-mesh2* #f)
 
 (define (draw-world mvp t)
   ;; пол и потолок — СЕТКА 13×14 (гигантские треугольники дают афинные
   ;; артефакты интерполяции — полосы на скрин-спейсе)
   (if (not *floor-mesh*)
       (begin
-        (set! *floor-mesh* (build-grid-mesh 0.0))
-        (set! *ceil-mesh* (build-grid-mesh 3.4)))
+        (set! *floor-mesh* (build-grid-mesh 0.0 0))
+        (set! *floor-mesh2* (build-grid-mesh 0.0 1))
+        (set! *ceil-mesh* (build-grid-mesh 3.4 0))
+        (set! *ceil-mesh2* (build-grid-mesh 3.4 1)))
       #f)
-  (draw-mesh *floor-mesh* (mat-identity) mvp (list 0.22 0.20 0.18))
-  (draw-mesh *ceil-mesh* (mat-identity) mvp (list 0.16 0.16 0.18))
+  (draw-mesh *floor-mesh* (mat-identity) mvp (list 0.36 0.33 0.29))
+  (draw-mesh *floor-mesh2* (mat-identity) mvp (list 0.31 0.28 0.25))
+  (draw-mesh *ceil-mesh* (mat-identity) mvp (list 0.24 0.23 0.24))
+  (draw-mesh *ceil-mesh2* (mat-identity) mvp (list 0.20 0.19 0.21))
   ;; стены одним батчем
   (if *wall-instances* (draw-batch *wall-mesh* *wall-instances* mvp) #f)
   ;; крепи: пары столбов в свободных клетках (x+z) кратно 3
@@ -486,15 +503,23 @@
           (go-x 1)
           (go-z (+ z 1)))))
   (go-z 1)
-  ;; лампы-плафоны (мерцают)
+  ;; лампы-плафоны (мерцают) + тёплые пятна на полу под ними
   (define (go-l i)
     (if (>= i (length *lamps*))
         #f
         (let* ((lamp (nth *lamps* i))
+               (lx (car lamp)) (lz (cadr lamp))
                (ph (caddr lamp))
                (blink (if (< (sin (+ (* t 13.0) (* ph 7.0))) -0.82) 0.12 1.0)))
           (draw-mesh *lamp-mesh* (mat-identity) mvp
                      (list (* 0.9 blink) (* 0.8 blink) (* 0.5 blink)))
+          ;; плашмя: масштаб → поворот X на 90° → перенос
+          (let* ((sc (+ 1.8 (* 0.6 blink)))
+                 (m (mat-mul (mat-translate lx 0.04 lz)
+                            (mat-mul (mat-rotate-x 1.5708)
+                                     (mat-scale sc sc sc)))))
+            (draw-mesh *page-mesh* m mvp
+                       (list (* 0.34 blink) (* 0.26 blink) (* 0.13 blink))))
           (go-l (+ i 1)))))
   (go-l 0)
   ;; записки на стенах
@@ -579,7 +604,7 @@
                    (dx (- *mx* *px*)) (dz (- *mz* *pz*))
                    (md (sqrt (+ (* dx dx) (* dz dz))))
                    (k (max 0.0 (min 1.0 (- 1.05 (/ md 22.0))))))
-              (gpu-light-spot sx sy (+ 9.0 (* 7.0 k)) (* 1.8 k) 1.0 1.0 0.95))
+              (gpu-light-spot sx sy (+ 9.0 (* 7.0 k)) (* 2.2 k) 1.0 1.0 0.95))
             #f))))
 
 ;; полосы помех при взгляде на монстра
@@ -612,8 +637,8 @@
                        (+ (cadr eye2) -0.6)
                        (+ *pz* (* 10 (- 0 (cos *yaw*))))))
          (mvp (camera-mvp eye2 target 0.9)))
-    (gpu3d-clear 0.005 0.006 0.010)
-    (gpu3d-fog 0.01 0.011 0.016 0.05)
+    (gpu3d-clear 0.012 0.014 0.022)
+    (gpu3d-fog 0.012 0.013 0.02 0.034)
     (gpu3d-view (car eye2) (cadr eye2) (caddr eye2))
     (draw-world mvp t)
     ;; пост: виньетка дышит с опасностью, зерно растёт от статики
@@ -625,7 +650,7 @@
                   (+ 0.5 (* 0.16 danger) (* 0.10 *static*))
                   (+ 0.10 (* 0.45 *static*))))
     ;; тьма
-    (gpu-fill-rect-a 0 0 *screen-w* *screen-h* 0.0 0.0 0.0 0.42)
+    (gpu-fill-rect-a 0 0 *screen-w* *screen-h* 0.0 0.0 0.0 0.30)
     ;; фонарь: центр экрана, мерцание при разряде
     (let* ((cx (* 0.5 *screen-w*))
            (cy (* 0.47 *screen-h*))
@@ -657,28 +682,45 @@
   (let ((w *screen-w*) (h *screen-h*))
     (if (string=? *state* "intro")
         (begin
-          (draw-rect 0 0 w h (list 0.01 0.01 0.02))
-          (draw-text "SHTOLNYA" (- (/ w 2) 44) 46 3 (list 0.85 0.82 0.75))
-          (draw-text "8 ZAPISEK. FONAR. ON ZHDET." (- (/ w 2) 92) 96 1 (list 0.55 0.5 0.45))
-          (draw-text "W/S HODBA  A/D POBOROT" (- (/ w 2) 74) 130 1 (list 0.4 0.42 0.4))
-          (draw-text "F FONAR  E BATAREYA  SPACE VZAT" (- (/ w 2) 92) 146 1 (list 0.4 0.42 0.4))
-          (draw-text "ZHEMI SPACE - NACHAT" (- (/ w 2) 66) 200 1 (list 0.8 0.75 0.6)))
+          (draw-rect 0 0 w h (list 0.016 0.014 0.02))
+          ;; рамка
+          (draw-rect 10 10 (- w 20) 2 (list 0.30 0.10 0.08))
+          (draw-rect 10 (- h 12) (- w 20) 2 (list 0.30 0.10 0.08))
+          (draw-rect 10 10 2 (- h 20) (list 0.30 0.10 0.08))
+          (draw-rect (- w 12) 10 2 (- h 20) (list 0.30 0.10 0.08))
+          ;; фонарь-блик по центру как логотип
+          (gpu-light-spot (/ w 2) 62 46 0.5 1.0 0.85 0.6)
+          (draw-text "SHTOLNYA" (- (/ w 2) 58) 42 4 (list 0.88 0.84 0.74))
+          (draw-text "8 ZAPISEK. FONAR. ON ZHDET." (- (/ w 2) 92) 88 1 (list 0.60 0.54 0.46))
+          (draw-text "W/S HODBA   A/D POBOROT" (- (/ w 2) 82) 122 1 (list 0.45 0.47 0.44))
+          (draw-text "F FONAR   E BATAREYA   SPACE/Q VZAT" (- (/ w 2) 98) 138 1 (list 0.45 0.47 0.44))
+          (if (> (sin (* *game-t* 4.0)) -0.2)
+              (draw-text "ZHEMI SPACE - NACHAT" (- (/ w 2) 70) 196 1 (list 0.85 0.78 0.6))
+              #f)
+          (draw-text "RLISP-ENGINE V0.16" (- (/ w 2) 56) (- h 34) 1 (list 0.30 0.30 0.34)))
         (begin
+          ;; верхняя панель
+          (gpu-fill-rect-a 0 0 w 16 0.02 0.02 0.03 0.62)
+          (draw-text "SHTOLNYA" 6 6 1 (list 0.42 0.40 0.36))
+          ;; счётчик записок по центру
+          (let ((label (string-append "ZAPISKI " (number->string *pages*) "/8")))
+            (draw-text label (- (/ w 2) (* (string-length label) 2) 8) 5 1
+                       (if (>= *pages* *total-pages*)
+                           (list 0.6 0.9 0.55)
+                           (list 0.82 0.78 0.68))))
+          ;; батарея справа: рамка + заряд + запас
           (if (string=? *state* "dead")
               #f
-              (draw-text (string-append "ZAPISKI " (number->string *pages*) "/8")
-                         8 8 1 (list 0.8 0.78 0.7)))
-          (if (string=? *state* "dead")
-              #f
-              (draw-rect 8 22 84 6 (list 0.08 0.08 0.08)))
-          (let ((bw (* 80 (/ (max 0.0 *batt*) 100.0))))
-            (draw-rect 10 24 bw 2
+              (draw-rect (- w 96) 4 64 8 (list 0.10 0.10 0.10)))
+          (let ((bw (* 60 (/ (max 0.0 *batt*) 100.0))))
+            (draw-rect (- w 94) 6 bw 4
                        (if (< *batt* 25.0)
-                           (list 0.9 0.25 0.15)
-                           (list 0.85 0.75 0.35))))
-          (draw-text (number->string *spare*) 100 22 1 (list 0.5 0.55 0.45))
-          (draw-text (string-append "ST:" (number->string *static*) " T:" (number->string (floor *game-t*)))
-                     150 22 1 (list 0.6 0.6 0.7))
+                           (list 0.9 0.3 0.15)
+                           (list 0.9 0.78 0.35))))
+          (draw-text (string-append "X" (number->string *spare*)) (- w 26) 5 1
+                     (list 0.55 0.58 0.48))
+          ;; прицел-точка
+          (draw-rect (- (/ w 2) 1) (- (* 47 (/ h 100)) 1) 2 2 (list 0.75 0.72 0.62))
           (if *near-page*
               (draw-text "SPACE - VZAT ZAPISKU" (- (/ w 2) 62) (- h 56) 1 (list 0.9 0.88 0.8))
               #f)
@@ -686,15 +728,31 @@
               (draw-text "VYHOD OTKRYT - IDI K VYHODU" (- (/ w 2) 96) 20 1 (list 0.7 0.9 0.6))
               #f)
           (if (string=? *state* "dead")
-              (begin
-                (draw-text "ON NASHEL TEBYA" (- (/ w 2) 66) 120 2 (list 0.9 0.2 0.15))
-                (draw-text "R - ESHCHE RAZ" (- (/ w 2) 46) 160 1 (list 0.6 0.4 0.35)))
+              (let ((el (- *game-t* *end-t*)))
+                (gpu-fill-rect-a 0 0 w h 0.03 0.01 0.01 (min 0.8 (* 0.9 el)))
+                (draw-text "ON NASHEL TEBYA" (- (/ w 2) 66) 108 2 (list 0.92 0.22 0.14))
+                (draw-text (string-append "ZAPISEK SOBRANO: "
+                                          (number->string *pages*) "/8")
+                           (- (/ w 2) 62) 152 1 (list 0.62 0.58 0.5))
+                (draw-text (string-append "VREMYA: "
+                                          (number->string (floor *game-t*)) " SEK")
+                           (- (/ w 2) 52) 168 1 (list 0.52 0.48 0.42))
+                (if (> (sin (* *game-t* 3.0)) -0.3)
+                    (draw-text "R - ESHCHE RAZ" (- (/ w 2) 46) 208 1 (list 0.8 0.74 0.62))
+                    #f))
               #f)
           (if (string=? *state* "win")
               (begin
-                (draw-text "TI VYSHOL" (- (/ w 2) 40) 120 2 (list 0.75 0.9 0.7))
-                (draw-text "SHTOLNYA OTPUSTILA TEBYA" (- (/ w 2) 84) 156 1 (list 0.5 0.55 0.45))
-                (draw-text "R - SNOVA" (- (/ w 2) 34) 180 1 (list 0.5 0.55 0.45)))
+                (gpu-fill-rect-a 0 0 w h 0.05 0.06 0.04 0.55)
+                (gpu-light-spot (/ w 2) 130 60 0.4 1.0 0.95 0.7)
+                (draw-text "TI VYSHOL" (- (/ w 2) 40) 112 2 (list 0.78 0.92 0.7))
+                (draw-text "SHTOLNYA OTPUSTILA TEBYA" (- (/ w 2) 84) 150 1 (list 0.55 0.6 0.5))
+                (draw-text (string-append "VREMYA: "
+                                          (number->string (floor *game-t*)) " SEK")
+                           (- (/ w 2) 52) 166 1 (list 0.5 0.52 0.46))
+                (if (> (sin (* *game-t* 3.0)) -0.3)
+                    (draw-text "R - SNOVA" (- (/ w 2) 34) 200 1 (list 0.7 0.74 0.62))
+                    #f))
               #f)))))
 
 ;; инициализация на верхнем уровне
