@@ -306,3 +306,18 @@ fn векторный_alu_и_страйд_рассылка() {
     assert!(ev_res(&cell, "(f32vec-strided-set! pos 0 0 ys)").is_err());
     assert!(ev_res(&cell, "(f32vec-op! d 'pow a b)").is_err());
 }
+
+#[test]
+fn atan2_четверти_и_детерминизм() {
+    let (c, cell) = ctx();
+    // четверть I: 45°
+    let r = ev_res(&cell, "(atan2 1 1)").unwrap();
+    assert!(r.contains("0.7853"), "atan2(1,1) ≈ π/4, получено {}", r);
+    // четверть II: 135°
+    let r = ev_res(&cell, "(atan2 1 -1)").unwrap();
+    assert!(r.contains("2.356"), "atan2(1,-1) ≈ 3π/4, получено {}", r);
+    // нулевой вектор → 0
+    let r = ev_res(&cell, "(atan2 0 1)").unwrap();
+    assert!(r.contains("0"), "atan2(0,1) = 0, получено {}", r);
+    let _ = c;
+}

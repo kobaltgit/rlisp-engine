@@ -393,6 +393,10 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
         need(args, 1)?;
         Ok(Value::Float(num_val(&args[0])?.cos()))
     });
+    def(env, "atan2", |args| {
+        need(args, 2)?;
+        Ok(Value::Float(num_val(&args[0])?.atan2(num_val(&args[1])?)))
+    });
     def(env, "tan", |args| {
         need(args, 1)?;
         Ok(Value::Float(num_val(&args[0])?.tan()))
