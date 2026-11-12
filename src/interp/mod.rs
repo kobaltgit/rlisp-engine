@@ -1,4 +1,5 @@
 pub mod builtins;
+pub mod builtins_io;
 pub mod builtins_vec;
 pub mod env;
 pub mod eval;
