@@ -747,4 +747,6 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
         load_file(&full, &lctx)?;
         Ok(Value::Bool(true))
     });
+
+    crate::interp::builtins_io::register_io_builtins(env, ctx);
 }
