@@ -23,10 +23,6 @@ fn json_escape(out: &mut String, s: &str) {
     out.push('"');
 }
 
-fn is_number(v: &Value) -> bool {
-    matches!(v, Value::Int(_) | Value::Float(_))
-}
-
 /// Таблица → JSON. Списки/процедуры — ошибка (сохраняемые данные простые).
 pub fn table_to_json(t: &Rc<RefCell<HashMap<String, Value>>>) -> Result<String, String> {
     let mut out = String::from("{");
@@ -48,12 +44,27 @@ pub fn table_to_json(t: &Rc<RefCell<HashMap<String, Value>>>) -> Result<String, 
 
 fn json_write(out: &mut String, v: &Value) -> Result<(), String> {
     match v {
-        Value::Str(s) => Ok(json_escape(out, s)),
-        Value::Int(i) => Ok(out.push_str(&i.to_string())),
+        Value::Str(s) => {
+            json_escape(out, s);
+            Ok(())
+        }
+        Value::Int(i) => {
+            out.push_str(&i.to_string());
+            Ok(())
+        }
         // Debug-формат f64 печатает «1.0» с точкой — парсер отличит от Int
-        Value::Float(f) => Ok(out.push_str(&format!("{:?}", f))),
-        Value::Bool(b) => Ok(out.push_str(if *b { "true" } else { "false" })),
-        Value::Table(t) => Ok(out.push_str(&table_to_json(t)?)),
+        Value::Float(f) => {
+            out.push_str(&format!("{:?}", f));
+            Ok(())
+        }
+        Value::Bool(b) => {
+            out.push_str(if *b { "true" } else { "false" });
+            Ok(())
+        }
+        Value::Table(t) => {
+            out.push_str(&table_to_json(t)?);
+            Ok(())
+        }
         other => Err(format!(
             "save-table: значение «{}» — не строка/число/буль/таблица",
             crate::interp::value::fmt_value(other)
