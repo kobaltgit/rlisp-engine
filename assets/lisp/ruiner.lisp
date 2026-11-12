@@ -21,6 +21,10 @@
 (defpersistent *muzzle* 0.0)
 (defpersistent *msg* "")
 (defpersistent *msg-t* 0.0)
+(defpersistent *step-t* 0.0)
+(defpersistent *growl-t* 0.0)
+(defpersistent *best-score* 0)
+(defpersistent *best-level* 1)
 
 ;; ——— параметры мира ———
 (define *N* 24)                 ; сетка 24×24
@@ -174,7 +178,7 @@
 (define (px! buf n x y r g b)
   (let ((i4 (* 4 (+ (* y n) x))))
     (f32set! buf i4 r) (f32set! buf (+ i4 1) g)
-    (f32set! buf (+ i4 2) b)))
+    (f32set! buf (+ i4 2) b) (f32set! buf (+ i4 3) 1.0)))
 (define (rect! buf n x0 y0 w h r g b)
   (dotimes (j h)
     (dotimes (i w)
@@ -184,7 +188,7 @@
 
 (define *imp-tex*
   (let ((buf (tex-canvas 24 24)))
-    (canvas-fill! buf 24 0.06 0.06 0.08 1.0)
+    (canvas-fill! buf 24 0.06 0.06 0.08 0.0)
     ;; тело: тёмно-красный
     (rect! buf 24 8 8 8 12 0.55 0.16 0.12)
     ;; плечи
@@ -204,28 +208,28 @@
     (texture-upload 24 24 buf)))
 (define *gore-tex*
   (let ((buf (tex-canvas 24 24)))
-    (canvas-fill! buf 24 0 0 0 1.0)
+    (canvas-fill! buf 24 0 0 0 0.0)
     (rect! buf 24 4 16 16 4 0.35 0.06 0.05)
     (rect! buf 24 7 13 10 3 0.42 0.08 0.06)
     (px! buf 24 5 18 0.3 0.04 0.04) (px! buf 24 18 18 0.3 0.04 0.04)
     (texture-upload 24 24 buf)))
 (define *med-tex*
   (let ((buf (tex-canvas 16 16)))
-    (canvas-fill! buf 16 0 0 0 1.0)
+    (canvas-fill! buf 16 0 0 0 0.0)
     (rect! buf 16 2 4 12 9 0.92 0.93 0.95)
     (rect! buf 16 6 5 4 7 0.85 0.1 0.12)
     (rect! buf 16 4 7 8 3 0.85 0.1 0.12)
     (texture-upload 16 16 buf)))
 (define *ammo-tex*
   (let ((buf (tex-canvas 16 16)))
-    (canvas-fill! buf 16 0 0 0 1.0)
+    (canvas-fill! buf 16 0 0 0 0.0)
     (rect! buf 16 2 6 12 7 0.75 0.6 0.15)
     (rect! buf 16 2 6 12 2 0.9 0.8 0.4)
     (px! buf 16 5 9 0.2 0.15 0.05) (px! buf 16 10 9 0.2 0.15 0.05)
     (texture-upload 16 16 buf)))
 (define *flash-tex*
   (let ((buf (tex-canvas 16 16)))
-    (canvas-fill! buf 16 0 0 0 1.0)
+    (canvas-fill! buf 16 0 0 0 0.0)
     (rect! buf 16 6 6 4 4 1.0 0.9 0.4)
     (rect! buf 16 4 7 8 2 1.0 0.75 0.25)
     (px! buf 16 3 8 1 0.6 0.2) (px! buf 16 12 8 1 0.6 0.2)
@@ -331,6 +335,8 @@
 (defsound-synth 'pickup  'sine   660 0.09 0.001 0.01 0.3 0.04 300 0.5)
 (defsound-synth 'level   'square 440 0.22 0.001 0.02 0.4 0.08 220 0.5)
 (defsound-synth 'ebite   'noise  500 0.1  0.001 0.02 0.3 0.06 0.0 0.5)
+(defsound-synth 'step    'noise  220 0.06 0.001 0.02 0.25 0.03 0.0 0.5)
+(defsound-synth 'growl   'saw    75  0.45 0.01  0.05 0.5 0.3 -35 0.5)
 
 ;; ——— стрельба: хитскан по конусу ———
 (define (fire!)
@@ -454,11 +460,12 @@
           (set! *msg* "УРОВЕНЬ ПРОЙДЕН")
           (set! *msg-t* *t*)
           (spawn-level)
-          (rebuild-meshes!))
+          (rebuild-meshes!)
+          (progress-save!))
         #f)))
 (define *exit-tex*
   (let ((buf (tex-canvas 16 16)))
-    (canvas-fill! buf 16 0 0 0 1.0)
+    (canvas-fill! buf 16 0 0 0 0.0)
     (dotimes (y 16)
       (let* ((k (/ y 15.0))
              (r (- 0.55 (* 0.5 k)))
@@ -496,8 +503,8 @@
     ;; стены
     (gpu3d-mesh-vc (car *walls*) *wall-uv* (cadr *walls*) (caddr *walls*)
                    (mat-identity) mvp 0)
-    ;; спрайты-билборды
-    (gpu3d-alpha-blend 0.92)
+    ;; спрайты-билборды: opaque + alpha-test — честные края, z-буфер
+    (gpu3d-alpha-test 0.5)
     ;; выход-портал
     (gpu3d-batch-tex (mesh-pos *bb-mesh*) *bb-uv* (mesh-idx *bb-mesh*)
                      *exit-tex*
@@ -551,7 +558,9 @@
                      *gore-tex* (einsts *enemies* '()) mvp)
     (gpu3d-batch-tex (mesh-pos *bb-mesh*) *bb-uv* (mesh-idx *bb-mesh*)
                      *imp-tex* (einsts *enemies* '()) mvp)
-    ;; вспышка выстрела
+    ;; вспышка выстрела — в blend-проходе (свечение)
+    (gpu3d-alpha-test 0.0)
+    (gpu3d-alpha-blend 0.92)
     (if (< (- *t* *muzzle*) 0.07)
         (gpu3d-batch-tex (mesh-pos *bb-mesh*) *bb-uv* (mesh-idx *bb-mesh*)
                          *flash-tex*
@@ -642,12 +651,33 @@
             (if (key-down? "e")
                 (let ((np (move-actor! (list *px* *pz*) (- (* dz sp)) (* dx sp))))
                   (set! *px* (car np)) (set! *pz* (cadr np)))
+                #f)
+            ;; звук шагов
+            (if (or (key-down? "w") (key-down? "s") (key-down? "q") (key-down? "e"))
+                (if (> (- *t* *step-t*) 0.38)
+                    (begin (set! *step-t* *t*) (play-sfx 'step))
+                    #f)
                 #f)))
         (update-enemies! dt)
+        ;; рык демона в погоне
+        (if (> (- *t* *growl-t*) 3.2)
+            (begin
+              (set! *growl-t* *t*)
+              (define (any-chase es)
+                (if (null? es)
+                    #f
+                    (if (and (eq? (cadddr (car es)) 'chase) (> (caddr (car es)) 0))
+                        #t
+                        (any-chase (cdr es)))))
+              (if (any-chase *enemies*) (play-sfx 'growl) #f))
+            #f)
         (update-items!)
         (check-exit!)
         (if (<= *hp* 0)
-            (begin (set! *state* 'dead) (play-sfx 'hurt))
+            (begin
+              (set! *state* 'dead)
+              (play-sfx 'hurt)
+              (progress-save!))
             #f)))
   (if (>= *frame* (+ *fps-last* 120))
       (begin
@@ -657,9 +687,27 @@
       #f)
   #t)
 
+(define *prog* (make-table))
+(if (load-table *prog* "saves/ruiner.json")
+    (begin
+      (set! *best-score* (table-get *prog* "best-score" 0))
+      (set! *best-level* (table-get *prog* "best-level" 1)))
+    #f)
+
+(define (progress-save!)
+  (table-set! *prog* "best-score"
+              (if (> *score* *best-score*) *score* *best-score*))
+  (table-set! *prog* "best-level"
+              (if (> *level* *best-level*) *level* *best-level*))
+  (set! *best-score* (table-get *prog* "best-score" 0))
+  (set! *best-level* (table-get *prog* "best-level" 1))
+  (save-table *prog* "saves/ruiner.json"))
+
 (define *fps-clock* (time-now))
 (spawn-level)
 (rebuild-meshes!)
+(print (string-append "РУИНЕР: рекорд очки " (number->string *best-score*)
+                      ", уровень " (number->string *best-level*)))
 (print (string-append "WALL-LEN " (number->string (f32vec-length (car *walls*)))))
 (print "RUINER TAIL")
 (print "TAIL-OK")

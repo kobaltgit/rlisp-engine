@@ -1,37 +1,26 @@
-# rlisp-engine v0.19.0 — «РУИНЕР», экспорт игр, кириллица
+# rlisp-engine v0.20.0 — честная альфа, сохранения прогресса
 
-Lisp-движок-конструктор: интерпретатор + SIMD-токенизатор, программный
-3D-конвейер + wgpu, NGS-физика, скелет, ECS, чиптюн-аудио, редактор,
-браузерная песочница.
+## Что нового с v0.19.0
 
-## Что нового с v0.18.0
-
-- **«РУИНЕР» (этап 28)** — DOOM-подобный лабиринтный шутер целиком на Lisp:
-  процедурные уровни, демоны с ИИ, хитскан-огонь, аптечки/патроны, портал
-  на следующий уровень, русский HUD, ~34 fps @ 320×240.
-- **Экспорт игр**: `python3 scripts/export_game.py --game ... --title ...`
-  собирает одностраничный автономный HTML — движок (WASM) и игра вшиты,
-  работает офлайн, автозапуск, fullscreen.
-- **Движок**: натив `hash-int` (детерминированный RNG, SplitMix64) и `atan`;
-  кириллица 3×5 в draw-text (А-Я + строчные) — русский HUD везде.
-- **Песочница**: пресет «РУИНЕР», расширенный keymap.
+- Спрайты без чёрных подложек: per-texel альфа (alpha-test в opaque,
+  блендинг в прозрачном проходе) — демоны/пикапы РУИНЕРА выглядят как
+  в классических шутерах.
+- `save-table`/`load-table`: JSON-сохранения игр без зависимостей;
+  РУИНЕР хранит рекорд очков и уровень в `saves/ruiner.json`.
+- Звук: шаги при движении, рыки демонов в погоне.
 
 ## Быстрый старт
 
 ```bash
-tar -xzf rlisp-engine-v0.19.0-linux-x64.tar.gz && cd rlisp-engine-0.19.0
-./rlisp-engine --script lisp/main_ruiner.lisp   # РУИНЕР
-./rlisp-engine --script lisp/main_valley.lisp   # ДОЛИНА (этап 27)
+tar -xzf rlisp-engine-v0.20.0-linux-x64.tar.gz && cd rlisp-engine-0.20.0
+./rlisp-engine --script lisp/main_ruiner.lisp
 ```
 
-Экспорт своей игры:
+Экспорт игры одним файлом:
 ```bash
-python3 scripts/export_game.py --game assets/lisp/main_mygame.lisp \
-  --title "МОЯ ИГРА" --out mygame.html
+python3 scripts/export_game.py --game assets/lisp/main_ruiner.lisp \
+  --title "РУИНЕР" --out ruiner.html
 ```
-
-Управление РУИНЕРОМ: W/S ходьба, A/D поворот, Q/E стрейф, ПРОБЕЛ огонь,
-R — рестарт после гибели. Дойдите до зелёного портала — следующий уровень.
 
 ## Лицензии
 

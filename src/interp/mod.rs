@@ -4,6 +4,7 @@ pub mod env;
 pub mod eval;
 pub mod loader;
 pub mod parse;
+pub mod save;
 pub mod value;
 
 #[cfg(test)]
