@@ -380,9 +380,49 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
         need(args, 1)?;
         Ok(Value::Int(num_val(&args[0])?.floor() as i64))
     });
+    // hash-int (v0.19): детерминированный хэш целых аргументов (SplitMix64-финал).
+    // Сцены ранее строили «случайность» на |sin(x·k+φ)| — при целом сиде точки
+    // ложились на кривую Лиссажу вместо плоскости (лес «весь позади» в ДОЛИНЕ).
+    // (hash-int a [b [c [d]]]) → целое [0, 2^32) как Float (точно в f64);
+    // в Lisp: (mod (hash-int x z lvl) 100), (/ (hash-int ...) 4294967296.0).
+    def(env, "hash-int", |args| {
+        if args.is_empty() || args.len() > 4 {
+            return Err("hash-int: (hash-int a [b [c [d]]])".into());
+        }
+        let mut acc: u64 = 0x243F6A8885A308D3;
+        for (i, a) in args.iter().enumerate() {
+            let v = match a {
+                Value::Int(n) => *n as u64,
+                Value::Float(f) => {
+                    let n = *f as i64;
+                    if n as f64 != *f {
+                        return Err(format!("hash-int: {} — не целое", f));
+                    }
+                    n as u64
+                }
+                other => return Err(format!("hash-int: целые: {}", fmt_value(other))),
+            };
+            acc = (acc ^ v.rotate_left((i as u32) * 17))
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .rotate_left(31);
+        }
+        // финализатор splitmix64 — лавинность
+        let mut x = acc;
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+        x ^= x >> 31;
+        Ok(Value::Float(((x >> 32) as u32) as f64))
+    });
     def(env, "sqrt", |args| {
         need(args, 1)?;
         Ok(Value::Float(num_val(&args[0])?.sqrt()))
+    });
+    // atan (v0.19): (atan y) — арктангенс, (atan y x) — угол направления
+    // на точку (x, y) с учётом квадранта. Нужен играм: поворот к цели.
+    def(env, "atan", |args| match args.len() {
+        1 => Ok(Value::Float(num_val(&args[0])?.atan())),
+        2 => Ok(Value::Float(num_val(&args[0])?.atan2(num_val(&args[1])?))),
+        _ => Err("atan: (atan y [x])".into()),
     });
     // тригонометрия (v0.2): нужна 3D-DSL — матрицы поворота, камера, анимация
     def(env, "sin", |args| {

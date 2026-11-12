@@ -84,6 +84,7 @@ const WASM_B64 = "__WASM_B64__";
 
 // ——— пресеты ———————————————————————————————————————————————————————
 const PRESETS = {
+"РУИНЕР (DOOM-подобный шутер: демоны, огонь)": __PRESET_RUINER__,
 "ДОЛИНА (ландшафт: озеро, лес, день-ночь)": __PRESET_VALLEY__,
 "ШТОЛЬНЯ (хоррор: фонарь, монстр)": __PRESET_SHTOLNYA__,
 "ОАЗИС (FPS: лисы, стрельба, волны)": __PRESET_OASIS__,
@@ -230,7 +231,7 @@ function loop(t) {
 }
 
 // ——— клавиатура → движок ————————————————————————————————————————————
-const keymap = { KeyA: "a", KeyD: "d", KeyW: "w", KeyS: "s", KeyR: "r", Space: " " };
+const keymap = { KeyA: "a", KeyD: "d", KeyW: "w", KeyS: "s", KeyR: "r", KeyQ: "q", KeyE: "e", KeyT: "t", KeyG: "g", Space: " " };
 function sendKey(e, down) {
   const k = keymap[e.code];
   if (!k || !S) return;
