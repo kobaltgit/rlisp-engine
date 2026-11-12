@@ -145,6 +145,19 @@ pub static EMBEDDED_LISP: &[(&str, &str)] = &[
         "../assets/lisp/main_valley.lisp",
         include_str!("../../assets/lisp/main_valley.lisp"),
     ),
+    ("ruiner.lisp", include_str!("../../assets/lisp/ruiner.lisp")),
+    (
+        "../assets/lisp/ruiner.lisp",
+        include_str!("../../assets/lisp/ruiner.lisp"),
+    ),
+    (
+        "main_ruiner.lisp",
+        include_str!("../../assets/lisp/main_ruiner.lisp"),
+    ),
+    (
+        "../assets/lisp/main_ruiner.lisp",
+        include_str!("../../assets/lisp/main_ruiner.lisp"),
+    ),
 ];
 
 #[cfg(target_arch = "wasm32")]

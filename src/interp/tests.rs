@@ -321,3 +321,36 @@ fn atan2_четверти_и_детерминизм() {
     assert!(r.contains("0"), "atan2(0,1) = 0, получено {}", r);
     let _ = c;
 }
+
+#[test]
+fn hash_int_детерминизм_диапазон_и_лавина() {
+    let (_c, cell) = ctx();
+    // детерминизм: одинаковые аргументы — одинаковый результат
+    assert_eq!(ev(&cell, "(hash-int 7 3)"), ev(&cell, "(hash-int 7 3)"));
+    // диапазон: целое [0, 2^32)
+    let a = ev(&cell, "(hash-int 42)").parse::<f64>().unwrap();
+    assert!((0.0..4294967295.0).contains(&a));
+    // порядок аргументов и разные значения меняют хэш (лавина)
+    assert_ne!(ev(&cell, "(hash-int 1 2)"), ev(&cell, "(hash-int 2 1)"));
+    assert_ne!(ev(&cell, "(hash-int 5 9 1)"), ev(&cell, "(hash-int 5 9 2)"));
+    // распределение по 64 корзинам, 1024 точки: без «кривой Лиссажу»
+    // (у sin-хэшей половина корзин пустая, есть кластеры)
+    assert!(ev_res(&cell,
+        "(define (count-bucket b i n) (if (>= i 1024) n (count-bucket b (+ i 1) (+ n (if (= (mod (hash-int i 77) 64) b) 1 0)))))"
+    ).is_ok());
+    assert!(ev_res(&cell,
+        "(define (walk-buckets b mn mx) (if (>= b 64) (list mn mx) (let ((c (count-bucket b 0 0))) (walk-buckets (+ b 1) (min mn c) (max mx c)))))"
+    ).is_ok());
+    let fill = ev(&cell, "(walk-buckets 0 99 0)");
+    let nums: Vec<f64> = fill
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split_whitespace()
+        .map(|x| x.parse().unwrap())
+        .collect();
+    assert_eq!(nums.len(), 2, "формат: {}", fill);
+    assert!(nums[0] >= 1.0, "пустые корзины: {}", fill);
+    assert!(nums[1] <= 34.0, "кластеризация: {}", fill);
+    // нецелый аргумент — честная ошибка
+    assert!(ev_res(&cell, "(hash-int 1.5)").is_err());
+}
