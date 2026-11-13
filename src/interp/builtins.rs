@@ -15,24 +15,10 @@ use crate::interp::value::{
 
 // ——————————————————————————— встроенные функции ———————————————————————————
 
-static RND_STATE: AtomicU64 = AtomicU64::new(0);
-static GSYM: AtomicU64 = AtomicU64::new(0);
+// ГПСЧ живёт в interp/rng.rs (детерминизм — отдельная ответственность).
+use crate::interp::rng::next_random;
 
-fn next_random() -> f64 {
-    let mut x = RND_STATE.load(Ordering::Relaxed);
-    if x == 0 {
-        x = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E3779B97F4A7C15)
-            | 1;
-    }
-    x = x
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1442695040888963407);
-    RND_STATE.store(x, Ordering::Relaxed);
-    (x >> 11) as f64 / (1u64 << 53) as f64
-}
+static GSYM: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn key_str(v: &Value) -> Result<String, String> {
     match v {
@@ -592,6 +578,9 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
 
     // — векторы и векторный ALU —
     register_vector_builtins(env);
+
+    // — детерминизм и запись прогона (random-seed/random-int/replay-*) —
+    crate::interp::builtins_replay::register_replay_builtins(env);
 
     // — таблицы (ECS-компоненты и прочее состояние) —
     def(env, "table?", |args| {

@@ -9,7 +9,7 @@
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
 
-![Tests](https://img.shields.io/badge/tests-104%20passing-7ee787)
+![Tests](https://img.shields.io/badge/tests-143%20passing-7ee787)
 ![Deps](https://img.shields.io/badge/dependencies-0-critical)
 ![Физполигон](demo/physpoly.gif)
 ![orbital](demo/orbital.gif)
@@ -28,6 +28,27 @@
 
 **Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL.**
 **Сайт:** [kostyk348.github.io/rlisp-engine](https://kostyk348.github.io/rlisp-engine/) · **Песочница в браузере:** [playground.html](https://kostyk348.github.io/rlisp-engine/playground.html) — весь движок в WASM, открывается как файл.
+
+> **Что это.** Игровой движок, в котором игровая логика — это Lisp, а Rust — только
+> доступ к железу: растр, ввод, время, звук. Игра — это файл `.lisp`, который можно
+> править на ходу, не пересобирая ничего.
+>
+> **Зачем.** Потому что код игры должен быть данными. Здесь `update`, `draw`,
+> физика, ECS, HUD и сам редактор сцены написаны на Lisp поверх ~24k строк Rust-HAL.
+> Из этого следуют три проверяемых свойства: **hot reload без перезапуска**,
+> **побитово воспроизводимый прогон** (вход + seed + hash каждого кадра) и
+> **ноль зависимостей** — `cargo build` не тянет ни одного крейта.
+>
+> **За 30 секунд.**
+> ```bash
+> git clone https://github.com/kostyk348/rlisp-engine && cd rlisp-engine
+> cargo run --release                              # игра «Выживание» — весь код в assets/lisp/
+> cargo run --release -- --serve                   # редактор аля Unity: http://127.0.0.1:7300
+> cargo run --release -- --script assets/lisp/replay_demo.lisp --fast --frames 240 \
+>     --record saves/demo.rlrp                     # запись прогона
+> cargo run --release -- --script assets/lisp/replay_demo.lisp --fast --frames 240 \
+>     --replay saves/demo.rlrp                      # сверка: те же 240 кадров, тот же chain
+> ```
 
 | | |
 |---|---|
@@ -85,6 +106,45 @@ drag-n-drop префабов, сохранение сцены в Lisp-файл**
 │  z-буфер │ ввод │ память │ время │ PNG-кодек │ HTTP │ MCP            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+## Детерминизм: прогон воспроизводится побитово (этап 30)
+
+Редкий зверь в игровых движках: **каждый кадр имеет hash, кадры сцеплены в
+цепочку**, и любой прогон можно записать и потом сверить кадр в кадр.
+
+```bash
+# записать: seed ГПСЧ + поток ввода по кадрам + hash каждого кадра
+cargo run --release -- --script assets/lisp/replay_demo.lisp \
+    --fast --frames 240 --record saves/demo.rlrp
+
+# воспроизвести: те же кадры, тот же chain — или конкретный кадр расхождения
+cargo run --release -- --script assets/lisp/replay_demo.lisp \
+    --fast --frames 240 --replay saves/demo.rlrp
+# => replay replay: 240 из 240 кадров сверено, chain 883cd568c4599f32, OK
+```
+
+Что именно даёт:
+
+- **`--record` / `--replay`** — файл прогона: текст, диффабельный, десятки килобайт
+  на тысячи кадров (`RLISP-REPLAY 1`, `seed`, `fps`, `frames`, `start`, строки
+  `кадр hash ввод…`, `chain`). Ноль зависимостей, как и всё остальное;
+- **hash кадра — FNV-1a по байтам фреймбуфера**, а не по «состоянию мира»:
+  проверяется то, что реально увидел игрок, включая пиксели;
+- **цепочка вместо одного хеша**: `chain_{n+1} = mix(chain_n, кадр, hash)` —
+  расхождение любого кадра ломает все последующие, и первый несовпавший кадр
+  называется явно (`replay: кадр 0: hash кадра … ≠ …`, код возврата 1 для CI);
+- **живая запись из редактора**: запись можно включить с любого кадра
+  (`(replay-record! "saves/live.rlrp")` в консоли редактора, кнопка
+  «● Запись» / «■ Стоп» на вкладке «Консоль»); в файл пишется `start N`, и
+  воспроизведение сверяет кадры начиная с N — прогон с нуля и тот же seed
+  доходит до того же состояния;
+- **`(random-seed n)` / `(random-int a b)` / `(random-range a b)`** — единственный
+  источник случайности в движке, поэтому детерминизм не «в теории», а по
+  построению. `(replay-status)` / `(replay-report)` отдают состояние в Lisp и в UI.
+
+Проверено: 12 модульных тестов (`src/replay.rs`, `src/interp/rng.rs`) + сквозные
+прогоны `record → replay` с вводом и без, плюс живая запись из редактора на 1716
+кадров (все сверены, chain совпал). Сцена `assets/lisp/replay_demo.lisp` — эталон.
 
 ## Быстрый старт
 
@@ -457,6 +517,23 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
    символов, pshufb-классификация.
 6. JIT для eval (ТЗ §10.1) — числовые ядра сделаны в этапе 3 (49×);
    расширение покрытия — следующий шаг.
+
+## Этап 30 (v0.21.0): детерминизм, запись и воспроизведение прогона
+
+- **`src/replay.rs`**: файл прогона (seed, fps, `start`, hash каждого кадра,
+  цепочка), FNV-1a по фреймбуферу, `chain_step` с лавинным смешиванием; 12 тестов
+  (детерминизм, лавинность, roundtrip, расхождение кадра/ввода, запись с середины);
+- **`src/interp/rng.rs`**: ГПСЧ вынесен из `builtins.rs` в отдельный модуль с
+  контрактом «seed прогона» (`initial_seed`), `(random-seed …)`, `(random-int a b)`,
+  `(random-range a b)` — детерминизм как свойство, а не как обещание;
+- **`--record` / `--replay`** в CLI: запись и сверка; конец записи — штатное
+  завершение (сверено N из N), расхождение — код возврата 1;
+- **Нативы** `(replay-record! path)`, `(replay-stop!)`, `(replay-load! path)`,
+  `(replay-active?)`, `(replay-status)`, `(replay-report)` — управление из Lisp;
+- **Редактор**: панель «Детерминизм» на вкладке «Консоль» (● Запись / ■ Стоп /
+  ⧉ Воспроизвести) и живой статус `mode/frames/chain` в `/api/state`;
+- **`assets/lisp/replay_demo.lisp`** — эталонная сцена: тело, ввод, ГПСЧ, свой
+  mix состояния; служит и демо, и тестом «воспроизводится ли движок».
 
 ## Этап 29 (v0.20.0): честная альфа, сохранения прогресса
 

@@ -28,6 +28,7 @@ mod physics;
 mod png;
 mod post;
 pub mod render3d;
+pub mod replay;
 pub mod runner;
 pub mod simd;
 mod skel;

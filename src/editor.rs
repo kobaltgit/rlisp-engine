@@ -47,6 +47,8 @@ pub struct Bridge {
     pub log: Mutex<VecDeque<(u64, String)>>,
     pub log_seq: AtomicU64,
     pub assets: Mutex<Vec<String>>,
+    /// Статус детерминизма (src/replay.rs): mode/frames/chain — панель редактора.
+    pub replay: Mutex<String>,
     /// Этап 6: камера игры — JSON от хука (editor-camera), «null» если хука нет.
     pub camera: Mutex<String>,
     /// Этап 6: префабы игры — JSON от хука (prefab-list), «null» если хука нет.
@@ -76,6 +78,7 @@ impl Bridge {
             log: Mutex::new(VecDeque::new()),
             log_seq: AtomicU64::new(0),
             assets: Mutex::new(Vec::new()),
+            replay: Mutex::new(String::new()),
             camera: Mutex::new("null".into()),
             prefabs: Mutex::new("null".into()),
             audio: Mutex::new(None),
@@ -310,6 +313,7 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
                     Json::Arr(assets.iter().map(|a| Json::str(a)).collect()),
                 ),
                 // этап 6: камера для гизмо и префабы для drag-n-drop
+                ("replay", Json::Str(bridge.replay.lock().unwrap().clone())),
                 ("camera", Json::Str(camera)),
                 ("prefabs", Json::Str(prefabs)),
                 // аудиосистема: список звуков, число голосов, мастер-громкость
@@ -590,6 +594,8 @@ pub fn publish_extras(cell: &GlobalCell, bridge: &Arc<Bridge>) {
             *bridge.prefabs.lock().unwrap() = crate::json::value_to_json(&v).dump();
         }
     }
+    // детерминизм: строка «mode=… frames=… chain=…» для панели редактора
+    *bridge.replay.lock().unwrap() = crate::replay::status_line();
 }
 
 /// Игровая нить: разбор команд редактора (eval/keys/ctl-запросы reload).
