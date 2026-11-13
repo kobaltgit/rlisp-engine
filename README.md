@@ -1,11 +1,30 @@
+<div align="center">
+
+<img src="docs/banner.svg" alt="rlisp-engine banner" width="1000">
+
 # rlisp-engine
+
+### [English](README.en.md) | Русский
 
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
+
 ![Tests](https://img.shields.io/badge/tests-104%20passing-7ee787)
 ![Deps](https://img.shields.io/badge/dependencies-0-critical)
-[![Pages](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml)
-[English](README.en.md) | Русский
+![Физполигон](demo/physpoly.gif)
+![orbital](demo/orbital.gif)
+![редактор](demo/editor-full.png)
+![гизмо](demo/editor-gizmo.png)
+![сохранение сцены](demo/editor-save-scene.png)
+![материалы](demo/stage7-materials.png)
+![Штольня](docs/img/shtolnya_filmstrip.png)
+![Оазис](docs/img/oasis_filmstrip.png)
+![До/после](docs/img/physpoly_still1.png)
+
+</div>
+
+---
+
 
 **Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL.**
 **Сайт:** [kostyk348.github.io/rlisp-engine](https://kostyk348.github.io/rlisp-engine/) · **Песочница в браузере:** [playground.html](https://kostyk348.github.io/rlisp-engine/playground.html) — весь движок в WASM, открывается как файл.
