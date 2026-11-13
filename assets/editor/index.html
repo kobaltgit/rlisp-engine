@@ -147,6 +147,20 @@
 
   /* ─── консоль ─── */
   #p-console { flex: 1.2; }
+  /* Панель детерминизма (src/replay.rs): запись прогона и hash-цепочка */
+  .det { display:flex; align-items:center; gap:8px; padding:7px 10px;
+         border-bottom:1px solid var(--line); background:rgba(255,255,255,0.02);
+         font-size:12px; flex-wrap:wrap; }
+  .det-title { color:var(--dim); text-transform:uppercase; letter-spacing:.08em; font-size:10px; }
+  .det input { flex:0 1 240px; background:#11141a; color:var(--fg); border:1px solid var(--line);
+               border-radius:5px; padding:4px 7px; font-family:var(--mono); font-size:11px; }
+  .det button { padding:4px 9px; border-radius:5px; border:1px solid var(--line);
+                background:#1a1e26; color:var(--fg); cursor:pointer; font-size:11px; }
+  .det button:hover { border-color:var(--acc); color:var(--acc); }
+  .det-st { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--dim); }
+  .det-st.ok { color:#5cd08a; }
+  .det-st.bad { color:#e06c75; }
+
   #log { flex: 1; overflow-y: auto; padding: 8px 10px; font-family: Consolas, monospace;
          font-size: 12px; background: #10131a; }
   #log .ln { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
@@ -275,6 +289,15 @@
       <div id="assets"></div>
     </div>
     <div class="tabpage" id="p-console">
+      <div class="det">
+        <span class="det-title">Детерминизм</span>
+        <input id="det-path" value="saves/session.rlrp" spellcheck="false"
+               title="файл прогона: вход + seed + hash каждого кадра">
+        <button id="b-det-rec" title="начать запись прогона (вход + seed + hash кадров)">● Запись</button>
+        <button id="b-det-stop" title="остановить и сохранить файл прогона">■ Стоп</button>
+        <button id="b-det-cmd" title="команда воспроизведения для терминала">⧉ Воспроизвести</button>
+        <span id="det-st" class="det-st">—</span>
+      </div>
       <div id="log"></div>
       <div id="repl">
         <span class="pr">›</span>
@@ -1537,6 +1560,12 @@ async function poll() {
     $("s-frame").textContent = st.frame;
     $("s-fps").textContent = Math.round(st.fps);
     $("s-dc").textContent = st.drawcalls;
+    if (st.replay !== undefined) {
+      const el = $("det-st");
+      const rp = st.replay || "mode=none";
+      el.textContent = rp === "mode=none" ? "детерминизм: выкл" : rp;
+      el.className = "det-st " + (rp.includes("MISMATCH") ? "bad" : (rp.includes("ok") ? "ok" : ""));
+    }
     isPaused = !!st.paused;
     $("paused-tag").style.display = isPaused ? "block" : "none";
     $("b-pause").textContent = isPaused ? "▶ Пуск" : "⏸ Пауза";
@@ -1653,6 +1682,30 @@ setInterval(poll, 250);
 poll();
 api("/api/eval", {code: "(gpu3d-state)"});
 logLine("редактор подключён. Всё живое: правь код — мир меняется без перезапуска.", "sys");
+</script>
+<script>
+// —— Панель детерминизма: запись/остановка прогона (нативы src/interp/builtins_replay.rs)
+(function () {
+  const $id = (x) => document.getElementById(x);
+  const path = () => ($id("det-path").value || "saves/session.rlrp").trim();
+  $id("b-det-rec").onclick = async () => {
+    const r = await evalLisp('(replay-record! "' + path() + '")');
+    logLine("детерминизм: запись → " + path(), "sys");
+    if (r && r.error) logLine("детерминизм: " + r.error, "bad");
+  };
+  $id("b-det-stop").onclick = async () => {
+    await evalLisp("(replay-stop!)");
+    logLine("детерминизм: остановлено, файл сохранён", "sys");
+  };
+  $id("b-det-cmd").onclick = () => {
+    const cmd = "cargo run --release -- --script " +
+      (document.getElementById("codefile").textContent.match(/[\w./-]+\.lisp/) || ["assets/lisp/game3d.lisp"])[0] +
+      " --fast --frames 600 --replay " + path();
+    logLine("детерминизм: " + cmd, "sys");
+    navigator.clipboard && navigator.clipboard.writeText(cmd);
+    toast("команда воспроизведения скопирована");
+  };
+})();
 </script>
 </body>
 </html>

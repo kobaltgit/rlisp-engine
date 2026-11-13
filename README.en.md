@@ -48,6 +48,42 @@ on master it had been broken since the first commit).
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+## Determinism: a run replays bit-for-bit (stage 30)
+
+A rare beast in a game engine: **every frame has a hash, the frames are chained**, and any
+run can be recorded and later verified frame by frame.
+
+```bash
+# record: RNG seed + per-frame input + the hash of every frame
+cargo run --release -- --script assets/lisp/replay_demo.lisp \
+    --fast --frames 240 --record saves/demo.rlrp
+
+# replay: same frames, same chain — or the exact frame that diverged
+cargo run --release -- --script assets/lisp/replay_demo.lisp \
+    --fast --frames 240 --replay saves/demo.rlrp
+# => replay replay: 240 из 240 кадров сверено, chain 883cd568c4599f32, OK
+```
+
+What it gives you:
+
+- **`--record` / `--replay`** — a plain-text, diffable run file (tens of KB for thousands of
+  frames): `RLISP-REPLAY 1`, `seed`, `fps`, `frames`, `start`, `frame hash input…` lines and
+  a final `chain`. Zero dependencies, like everything else;
+- **the frame hash is FNV-1a over the framebuffer bytes**, not over a "world model": what is
+  verified is what the player actually saw, pixels included;
+- **a chain instead of a single hash**: `chain_{n+1} = mix(chain_n, frame, hash)` — one
+  diverging frame breaks every hash after it, and the first mismatch is named explicitly
+  (exit code 1 for CI);
+- **live recording from the editor**: start at any frame from the console panel
+  (● Record / ■ Stop) or with `(replay-record! "saves/live.rlrp")`; the file stores
+  `start N` and replay verifies from frame N onward;
+- **`(random-seed n)`, `(random-int a b)`, `(random-range a b)`** — the single source of
+  randomness in the engine, so determinism holds by construction; `(replay-status)` and
+  `(replay-report)` expose the state to Lisp and to the editor UI.
+
+Verified by 12 unit tests plus end-to-end `record → replay` runs (with and without input)
+and a 1716-frame live recording from the editor (every frame checked, chain matched).
+
 ## Quickstart
 
 ```bash

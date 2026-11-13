@@ -20,6 +20,10 @@ pub struct Args {
     pub port: u16,
     pub mcp: bool,
     pub wgpu: bool,
+    /// --record <файл>: писать детерминированный прогон (вход + seed + hash кадров).
+    pub record: Option<String>,
+    /// --replay <файл>: воспроизвести прогон и сверить цепочку хешей.
+    pub replay: Option<String>,
 }
 
 impl Default for Args {
@@ -43,6 +47,8 @@ impl Default for Args {
             port: 7300,
             mcp: false,
             wgpu: false,
+            record: None,
+            replay: None,
         }
     }
 }
@@ -145,6 +151,8 @@ pub fn parse_args() -> Result<Args, String> {
                     .map_err(|_| "--port: не число")?
             }
             "--mcp" => args.mcp = true,
+            "--record" => args.record = Some(it.next().ok_or("--record: нужен путь")?),
+            "--replay" => args.replay = Some(it.next().ok_or("--replay: нужен путь")?),
             "--help" | "-h" => {
                 println!("{}", USAGE);
                 std::process::exit(0);

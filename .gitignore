@@ -9,3 +9,5 @@ demo/frames3d/
 *.log.tmp
 __pycache__/
 /core
+# прогоны/сейвы игр — рантайм
+saves/

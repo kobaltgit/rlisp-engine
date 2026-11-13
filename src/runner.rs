@@ -261,12 +261,31 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
         Some(p) => parse_input_file(p)?,
         None => vec![],
     };
+
+    // ——— детерминизм: --replay грузит запись и фиксирует seed, --record пишет свою ———
+    if let Some(p) = &args.replay {
+        let seed = crate::replay::start_replay(p)?;
+        crate::interp::rng::set_seed(seed);
+        println!(
+            "replay: {} (seed {}) — кадры сверяются по hash-цепочке",
+            p, seed
+        );
+    }
+    if let Some(p) = &args.record {
+        let seed = crate::interp::rng::initial_seed();
+        crate::replay::start_record(p.clone(), seed, args.fps);
+        println!("record: {} (seed {}) — по завершении файл прогона", p, seed);
+    }
+    if crate::replay::active() && !(args.fast || args.input.is_some() || args.capture.is_some()) {
+        println!("replay: включён фиксированный dt (детерминированный режим)");
+    }
     let files: Vec<PathBuf> = ctx.registry.borrow().clone();
     let mut mtimes = snapshot_mtimes(&files);
     let n_files = files.len();
 
     println!(
-        "rlisp-engine v0.14 | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
+        "rlisp-engine v{} | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
+        env!("CARGO_PKG_VERSION"),
         simd::level_name(simd::detect()),
         render_note,
         w,
@@ -288,7 +307,8 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
     };
 
     let fixed_dt = 1.0 / args.fps;
-    let use_fixed = args.fast || args.capture.is_some() || args.input.is_some();
+    let use_fixed =
+        args.fast || args.capture.is_some() || args.input.is_some() || crate::replay::active();
     let mut sim_time = 0f64;
     let mut ev_i = 0usize;
     let mut stdin_held: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -309,10 +329,24 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
     let mut t_frame = Instant::now();
 
     while frames < args.frames {
-        // ввод из сценария
-        while ev_i < events.len() && events[ev_i].0 <= sim_time {
-            halrc.borrow_mut().queue.push(events[ev_i].1.clone());
-            ev_i += 1;
+        // ввод: при воспроизведении — из записи (кадр в кадр), иначе из сценария
+        let mut frame_inputs: Vec<String> = Vec::new();
+        if let Some(recorded) = crate::replay::frame_inputs(frames) {
+            for v in recorded {
+                if let Some(enc) = crate::replay::encode_input(&v) {
+                    frame_inputs.push(enc);
+                }
+                halrc.borrow_mut().queue.push(v);
+            }
+        } else {
+            while ev_i < events.len() && events[ev_i].0 <= sim_time {
+                let v = events[ev_i].1.clone();
+                if let Some(enc) = crate::replay::encode_input(&v) {
+                    frame_inputs.push(enc);
+                }
+                halrc.borrow_mut().queue.push(v);
+                ev_i += 1;
+            }
         }
         // авто-release для stdin-нажатий (key-up там физически не приходит)
         if !stdin_held.is_empty() {
@@ -323,10 +357,11 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
                 .collect();
             for k in due {
                 stdin_held.remove(&k);
-                halrc.borrow_mut().queue.push(Value::List(vec![
-                    Value::Sym("key-up".into()),
-                    Value::Str(k),
-                ]));
+                let ev = Value::List(vec![Value::Sym("key-up".into()), Value::Str(k)]);
+                if let Some(enc) = crate::replay::encode_input(&ev) {
+                    frame_inputs.push(enc);
+                }
+                halrc.borrow_mut().queue.push(ev);
             }
         }
         // ввод с клавиатуры
@@ -336,19 +371,22 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
                     b'q' | b'Q' | 3 => quit = true,
                     b'a'..=b'z' => {
                         let k = (b as char).to_string();
-                        halrc.borrow_mut().queue.push(Value::List(vec![
-                            Value::Sym("key-down".into()),
-                            Value::Str(k.clone()),
-                        ]));
+                        let ev =
+                            Value::List(vec![Value::Sym("key-down".into()), Value::Str(k.clone())]);
+                        if let Some(enc) = crate::replay::encode_input(&ev) {
+                            frame_inputs.push(enc);
+                        }
+                        halrc.borrow_mut().queue.push(ev);
                         // stdin не отдаёт key-up: авто-release через 12 sim-кадров
                         stdin_held.insert(k, frames + 12);
                     }
                     b'A'..=b'Z' => {
                         let k = (b as char).to_lowercase().to_string();
-                        halrc.borrow_mut().queue.push(Value::List(vec![
-                            Value::Sym("key-up".into()),
-                            Value::Str(k),
-                        ]));
+                        let ev = Value::List(vec![Value::Sym("key-up".into()), Value::Str(k)]);
+                        if let Some(enc) = crate::replay::encode_input(&ev) {
+                            frame_inputs.push(enc);
+                        }
+                        halrc.borrow_mut().queue.push(ev);
                     }
                     _ => {}
                 }
@@ -499,6 +537,23 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
             }
         }
 
+        // детерминизм: hash кадра → цепочка (record — накопить, replay — сверить)
+        if crate::replay::active() {
+            let fbh = {
+                let hal = halrc.borrow();
+                crate::replay::fbv_hash(&hal.fb)
+            };
+            if let Err(e) = crate::replay::tick(frames, fbh, frame_inputs.clone()) {
+                eprintln!("replay: {}", e);
+                if crate::replay::mode() == Some(crate::replay::Mode::Replay) {
+                    return Err(format!("воспроизведение разошлось — {}", e));
+                }
+            }
+            if crate::replay::finished() {
+                break; // запись пройдена до конца
+            }
+        }
+
         frames += 1;
         sim_time += dt;
 
@@ -563,5 +618,14 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
         reloads,
         score
     );
+    if crate::replay::active() {
+        let diverged = crate::replay::diverged();
+        if let Some(report) = crate::replay::stop() {
+            println!("{}", report);
+        }
+        if diverged {
+            return Err("воспроизведение разошлось: прогон не совпал с записью".into());
+        }
+    }
     Ok(())
 }
